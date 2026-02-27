@@ -68,12 +68,13 @@ body {
     gap: 0.5rem;
 }
 .message {
-    max-width: 90%;
+    max-width: 100%;
     padding: 0.5rem 0.75rem;
     border-radius: 0.5rem;
     white-space: pre-wrap;
     word-break: break-word;
     animation: messageIn 0.2s ease-out;
+    scroll-margin-bottom: 60px;
 }
 @keyframes messageIn {
     from { opacity: 0; transform: translateY(10px); }
@@ -223,7 +224,7 @@ HTML_PAGE = f"""<!DOCTYPE html>
             div.innerHTML = content;
             chat.appendChild(div);
             const last = chat.lastElementChild;
-            if (last) last.scrollIntoView({{block: 'end', behavior: 'auto'}});
+            if (last) last.scrollIntoView({{block: 'nearest', behavior: 'auto'}});
         }}
         
         function setTyping() {{
@@ -239,7 +240,6 @@ HTML_PAGE = f"""<!DOCTYPE html>
             const msg = input.value.trim();
             if (!msg) return;
             
-            input.blur();
             addMessage(msg, 'user');
             input.value = '';
             sendBtn.disabled = true;
@@ -300,7 +300,6 @@ HTML_PAGE = f"""<!DOCTYPE html>
             
             sendBtn.disabled = false;
             sendBtn.classList.remove('loading');
-            input.blur();
         }}
         
         function handleEvent(event) {{
