@@ -379,6 +379,7 @@ _markdown = mistune.create_markdown(plugins=["strikethrough", "table"])
 
 
 def format_message(content: str) -> str:
+    content = content.rstrip()
     content = _markdown(content)
     content = content.replace("<a href=", '<a target="_blank" href=')
     content = re.sub(r"<li>\s*<p>", "<li>", content)
@@ -388,7 +389,7 @@ def format_message(content: str) -> str:
     content = re.sub(r"\s+</(ul|ol)>", r"</\1>", content)
     content = re.sub(r"(<table>)", r"<div style='overflow-x:auto'>\1", content)
     content = re.sub(r"(</table>)", r"\1</div>", content)
-    return content
+    return content.rstrip()
 
 
 class Handler(BaseHTTPRequestHandler):
