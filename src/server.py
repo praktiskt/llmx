@@ -45,14 +45,13 @@ CATPPUCCIN_MOCHA = """
     --sapphire: #74c7ec;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-:root { --vh: 1vh; }
 body {
     background: var(--base);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    height: calc(var(--vh, 1vh) * 100);
+    height: 100dvh;
     display: flex;
     flex-direction: column;
 }
@@ -211,12 +210,6 @@ HTML_PAGE = f"""<!DOCTYPE html>
         <button id="send"><span class="btn-text">Send</span><span class="spinner"></span></button>
     </div>
     <script>
-        function setVh() {{
-            document.documentElement.style.setProperty('--vh', (window.innerHeight * 0.01) + 'px');
-        }}
-        setVh();
-        window.addEventListener('resize', setVh);
-        
         const chat = document.getElementById('chat');
         const input = document.getElementById('msg');
         const sendBtn = document.getElementById('send');
@@ -227,7 +220,8 @@ HTML_PAGE = f"""<!DOCTYPE html>
             div.className = 'message ' + type;
             div.innerHTML = content;
             chat.appendChild(div);
-            chat.scrollTop = chat.scrollHeight;
+            const last = chat.lastElementChild;
+            if (last) last.scrollIntoView({{block: 'end', behavior: 'auto'}});
         }}
         
         function setTyping() {{
