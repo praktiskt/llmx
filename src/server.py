@@ -5,20 +5,19 @@ import html
 import json
 import os
 import re
-import requests
 import secrets
 import sys
 from contextlib import suppress
 from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 
 import mistune
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.llm import Config, Tools
-
 
 CATPPUCCIN_MOCHA = """
 :root {
@@ -82,7 +81,8 @@ body {
 }
 .message.user { align-self: flex-end; background: var(--blue); color: var(--crust); }
 .message.assistant, .message.thinking { align-self: flex-start; background: var(--surface1); }
-.message.thinking { border-left: 3px solid var(--mauve); }
+.message.thinking { border-left: 3px solid var(--mauve); font-style: italic; }
+.message.thinking .thinking-header { display: block; color: var(--mauve); font-weight: 600; font-style: normal; font-family: 'SF Mono', Monaco, monospace; font-size: 0.875rem; margin-bottom: 0.25rem; }
 .message.system { align-self: flex-start; background: var(--surface2); color: var(--subtext1); font-style: italic; }
 .message.tool-call, .message.tool-result {
     align-self: flex-start;
@@ -395,7 +395,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle(self):
         try:
             super().handle()
-        except (ConnectionResetError, BrokenPipeError, OSError):
+        except ConnectionResetError, BrokenPipeError, OSError:
             print(
                 f"[{datetime.now().isoformat()}] {self.address_string()} - client disconnected"
             )
@@ -518,7 +518,10 @@ class Handler(BaseHTTPRequestHandler):
                 message.get("reasoning_content") or message.get("reasoning") or ""
             )
             if reasoning:
-                self._send_event("thinking", html.escape(reasoning))
+                self._send_event(
+                    "thinking",
+                    f"<span class='thinking-header'>thinking</span>{html.escape(reasoning)}",
+                )
 
             tool_calls = message.get("tool_calls", [])
             if not tool_calls or not Config.tools_enabled():
