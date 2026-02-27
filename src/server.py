@@ -8,6 +8,8 @@ import re
 import requests
 import secrets
 import sys
+from contextlib import suppress
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
@@ -391,7 +393,22 @@ def format_message(content: str) -> str:
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass
+        print(
+            f"[{datetime.now().isoformat()}] {self.address_string()} - {format % args}"
+        )
+
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            print(
+                f"[{datetime.now().isoformat()}] {self.address_string()} - client disconnected"
+            )
+        except Exception as e:
+            print(
+                f"[{datetime.now().isoformat()}] {self.address_string()} - error: {e}"
+            )
+            raise
 
     def get_session_id(self) -> str | None:
         cookie = self.headers.get("Cookie", "")
@@ -402,6 +419,9 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def do_GET(self):
+        print(
+            f"[{datetime.now().isoformat()}] {self.address_string()} - GET {self.path}"
+        )
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.send_response(200)
@@ -413,6 +433,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
+        print(
+            f"[{datetime.now().isoformat()}] {self.address_string()} - POST {self.path}"
+        )
         parsed = urlparse(self.path)
         if parsed.path != "/chat":
             self.send_response(404)
@@ -542,7 +565,8 @@ def main():
 
     print(f"Starting server at http://{bind}:{port}")
     server = ThreadingHTTPServer((bind, port), Handler)
-    server.serve_forever()
+    with suppress(KeyboardInterrupt):
+        server.serve_forever()
 
 
 if __name__ == "__main__":
