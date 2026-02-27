@@ -392,11 +392,6 @@ def format_message(content: str) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        print(
-            f"[{datetime.now().isoformat()}] {self.address_string()} - {format % args}"
-        )
-
     def handle(self):
         try:
             super().handle()
