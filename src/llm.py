@@ -59,7 +59,7 @@ class Color:
 
 class Config:
     CONTENT_THRESHOLD = 5000
-    MAX_TOOL_RESULT_CHARS = 5000
+    MAX_TOOL_RESULT_CHARS = 8000
     GREP_MAX_MATCHES = 50
     BINARY_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".epub", ".doc"}
 
@@ -708,6 +708,7 @@ class Tools:
     ) -> str:
         def summarize_task(task: tuple) -> tuple:
             file_id, directive, content = task
+            tokens_for_summary = max(250, max_length * 2)
             messages = [
                 {
                     "role": "system",
@@ -721,6 +722,7 @@ class Tools:
                 "model": os.environ["LLM_MODEL"],
                 "temperature": 0.1,
                 "stream": False,
+                "max_tokens": tokens_for_summary,
             }
 
             headers = {
