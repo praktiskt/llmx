@@ -179,8 +179,8 @@ pre code { background: none; padding: 0; }
 table { border-collapse: collapse; width: 100%; margin: 0.25rem 0; }
 th, td { border: 1px solid var(--surface2); padding: 0.25rem 0.5rem; text-align: left; min-width: 80px; overflow-wrap: break-word; word-break: break-word; }
 th { background: var(--surface1); }
-ul, ol { padding-left: 1rem; margin: 0.25rem 0; }
-li { margin: 0.125rem 0; }
+ul, ol { padding-left: 1rem; margin: 0.25rem 0; list-style-type: disc; }
+li { margin: 0.125rem 0; display: list-item; }
 blockquote { border-left: 3px solid var(--overlay0); padding-left: 0.5rem; margin: 0.25rem 0; color: var(--subtext1); font-style: italic; }
 hr { border: none; border-top: 1px solid var(--surface2); margin: 0.5rem 0; }
 h1, h2, h3, h4, h5, h6 { margin: 0.5rem 0 0.25rem; color: var(--text); }
@@ -232,8 +232,7 @@ HTML_PAGE = f"""<!DOCTYPE html>
         }}
         
         function clearTyping() {{
-            const typing = chat.querySelector('.typing');
-            if (typing) typing.parentElement.remove();
+            chat.querySelectorAll('.message.system').forEach(el => el.remove());
         }}
         
         async function send() {{
@@ -374,18 +373,31 @@ def format_tool_call(tool_name: str, args: dict, result: str | None = None) -> s
     return f'<span class="tool-name">{html.escape(tool_name)}</span>\n<div class="tool-args"><pre><code>{escaped_args}</code></pre></div>{result_html}'
 
 
-_markdown = mistune.create_markdown(plugins=["strikethrough", "table"])
+_markdown = mistune.create_markdown(
+    plugins=[
+        "strikethrough",
+        "footnotes",
+        "table",
+        "url",
+        "task_lists",
+        "def_list",
+        "abbr",
+        "mark",
+        "insert",
+        "superscript",
+        "subscript",
+        "math",
+        "ruby",
+        "spoiler",
+    ]
+)
 
 
 def format_message(content: str) -> str:
     content = content.rstrip()
+    content = re.sub(r"•\s*", "- ", content)
     content = _markdown(content)
     content = content.replace("<a href=", '<a target="_blank" href=')
-    content = re.sub(r"<li>\s*<p>", "<li>", content)
-    content = re.sub(r"</p>\s*</li>", "</li>", content)
-    content = re.sub(r"</li>\s+<li>", "</li><li>", content)
-    content = re.sub(r"<(ul|ol)>\s+", r"<\1>", content)
-    content = re.sub(r"\s+</(ul|ol)>", r"</\1>", content)
     content = re.sub(r"(<table>)", r"<div style='overflow-x:auto'>\1", content)
     content = re.sub(r"(</table>)", r"\1</div>", content)
     return content.rstrip()
