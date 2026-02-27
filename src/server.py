@@ -47,11 +47,12 @@ CATPPUCCIN_MOCHA = """
     --rosewater: #f5e0dc;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --vh: 1vh; }
 body {
     background: var(--base);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    height: 100vh;
+    height: calc(var(--vh, 1vh) * 100);
     display: flex;
     flex-direction: column;
 }
@@ -59,12 +60,13 @@ body {
     flex: 1;
     overflow-y: auto;
     padding: 0.5rem;
+    padding-bottom: 6rem;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
 }
 .message {
-    max-width: 80%;
+    max-width: 90%;
     padding: 0.5rem 0.75rem;
     border-radius: 0.5rem;
     white-space: pre-wrap;
@@ -94,8 +96,12 @@ body {
 .result-content.collapsed { display: none; }
 .tool-result .result-label { color: var(--teal); }
 #input-area {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
     background: var(--mantle);
-    padding: 1rem;
+    padding: 0.75rem;
     border-top: 1px solid var(--surface1);
     display: flex;
     gap: 0.5rem;
@@ -105,10 +111,11 @@ body {
     background: var(--surface1);
     border: 1px solid var(--surface2);
     border-radius: 0.5rem;
-    padding: 0.75rem 1rem;
+    padding: 0.5rem 0.75rem;
     color: var(--text);
     font-size: 1rem;
     outline: none;
+    cursor: pointer;
 }
 #input-area input:focus { border-color: var(--blue); }
 #input-area button {
@@ -116,7 +123,7 @@ body {
     color: var(--crust);
     border: none;
     border-radius: 0.5rem;
-    padding: 0.75rem 1.5rem;
+    padding: 0.5rem 1rem;
     font-size: 1rem;
     font-weight: 600;
     cursor: pointer;
@@ -161,7 +168,7 @@ pre {
 }
 pre code { background: none; padding: 0; }
 table { border-collapse: collapse; width: 100%; margin: 0.25rem 0; }
-th, td { border: 1px solid var(--surface2); padding: 0.25rem 0.5rem; text-align: left; }
+th, td { border: 1px solid var(--surface2); padding: 0.25rem 0.5rem; text-align: left; min-width: 80px; overflow-wrap: break-word; word-break: break-word; }
 th { background: var(--surface1); }
 ul, ol { padding-left: 1rem; margin: 0.25rem 0; }
 li { margin: 0.125rem 0; }
@@ -186,17 +193,26 @@ HTML_PAGE = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, minimal-ui">
     <title>LLM Chat</title>
     <style>{CATPPUCCIN_MOCHA}</style>
 </head>
 <body>
     <div id="chat"></div>
     <div id="input-area">
-        <input type="text" id="msg" placeholder="Type your message..." autocomplete="off">
+        <input type="text" id="msg" placeholder="Type your message..." autocomplete="off" autofocus>
         <button id="send"><span class="btn-text">Send</span><span class="spinner"></span></button>
     </div>
     <script>
+        function setVh() {{
+            document.documentElement.style.setProperty('--vh', (window.innerHeight * 0.01) + 'px');
+        }}
+        setVh();
+        window.addEventListener('resize', setVh);
+        if (visualViewport) {{
+            visualViewport.addEventListener('resize', () => chat.scrollTop = chat.scrollHeight);
+        }}
+        
         const chat = document.getElementById('chat');
         const input = document.getElementById('msg');
         const sendBtn = document.getElementById('send');
@@ -206,7 +222,7 @@ HTML_PAGE = f"""<!DOCTYPE html>
             div.className = 'message ' + type;
             div.innerHTML = content;
             chat.appendChild(div);
-            chat.scrollTop = chat.scrollHeight;
+            setTimeout(() => chat.scrollTop = chat.scrollHeight, 100);
         }}
         
         function setTyping() {{
@@ -222,6 +238,7 @@ HTML_PAGE = f"""<!DOCTYPE html>
             const msg = input.value.trim();
             if (!msg) return;
             
+            input.blur();
             addMessage(msg, 'user');
             input.value = '';
             sendBtn.disabled = true;
@@ -283,6 +300,7 @@ HTML_PAGE = f"""<!DOCTYPE html>
             
             sendBtn.disabled = false;
             sendBtn.classList.remove('loading');
+            input.blur();
         }}
         
         function handleEvent(event) {{
@@ -306,7 +324,9 @@ HTML_PAGE = f"""<!DOCTYPE html>
             }}
         }});
         
-        input.focus();
+        window.addEventListener('load', () => input.focus());
+        document.getElementById('input-area').addEventListener('click', () => input.focus());
+        input.addEventListener('touchstart', () => input.focus());
     </script>
 </body>
 </html>"""
@@ -364,6 +384,8 @@ def format_message(content: str) -> str:
     content = re.sub(r"</li>\s+<li>", "</li><li>", content)
     content = re.sub(r"<(ul|ol)>\s+", r"<\1>", content)
     content = re.sub(r"\s+</(ul|ol)>", r"</\1>", content)
+    content = re.sub(r"(<table>)", r"<div style='overflow-x:auto'>\1", content)
+    content = re.sub(r"(</table>)", r"\1</div>", content)
     return content
 
 
@@ -517,11 +539,11 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def main():
-    host = os.environ.get("LLM_SERVER_HOST", "localhost")
+    bind = os.environ.get("LLM_BIND_ADDRESS", "0.0.0.0")
     port = int(os.environ.get("LLM_SERVER_PORT", "8080"))
 
-    print(f"Starting server at http://{host}:{port}")
-    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"Starting server at http://{bind}:{port}")
+    server = ThreadingHTTPServer((bind, port), Handler)
     server.serve_forever()
 
 
