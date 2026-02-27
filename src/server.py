@@ -5,6 +5,7 @@ import html
 import json
 import os
 import re
+import requests
 import secrets
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -42,9 +43,6 @@ CATPPUCCIN_MOCHA = """
     --teal: #94e2d5;
     --sky: #89dceb;
     --sapphire: #74c7ec;
-    --pink: #f5c2e7;
-    --flamingo: #f2cdcd;
-    --rosewater: #f5e0dc;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root { --vh: 1vh; }
@@ -52,6 +50,8 @@ body {
     background: var(--base);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     height: calc(var(--vh, 1vh) * 100);
     display: flex;
     flex-direction: column;
@@ -59,8 +59,9 @@ body {
 #chat {
     flex: 1;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     padding: 0.5rem;
-    padding-bottom: 6rem;
+    padding-bottom: 4.5rem;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
@@ -71,6 +72,11 @@ body {
     border-radius: 0.5rem;
     white-space: pre-wrap;
     word-break: break-word;
+    animation: messageIn 0.2s ease-out;
+}
+@keyframes messageIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 .message.user { align-self: flex-end; background: var(--blue); color: var(--crust); }
 .message.assistant, .message.thinking { align-self: flex-start; background: var(--surface1); }
@@ -116,6 +122,7 @@ body {
     font-size: 1rem;
     outline: none;
     cursor: pointer;
+    touch-action: manipulation;
 }
 #input-area input:focus { border-color: var(--blue); }
 #input-area button {
@@ -209,20 +216,18 @@ HTML_PAGE = f"""<!DOCTYPE html>
         }}
         setVh();
         window.addEventListener('resize', setVh);
-        if (visualViewport) {{
-            visualViewport.addEventListener('resize', () => chat.scrollTop = chat.scrollHeight);
-        }}
         
         const chat = document.getElementById('chat');
         const input = document.getElementById('msg');
         const sendBtn = document.getElementById('send');
+        const inputArea = document.getElementById('input-area');
         
         function addMessage(content, type = 'assistant') {{
             const div = document.createElement('div');
             div.className = 'message ' + type;
             div.innerHTML = content;
             chat.appendChild(div);
-            setTimeout(() => chat.scrollTop = chat.scrollHeight, 100);
+            chat.scrollTop = chat.scrollHeight;
         }}
         
         function setTyping() {{
@@ -287,7 +292,6 @@ HTML_PAGE = f"""<!DOCTYPE html>
                                     const event = JSON.parse(data);
                                     handleEvent(event);
                                 }} catch (e) {{
-                                    console.error('Parse error:', e);
                                 }}
                             }}
                         }}
@@ -325,7 +329,7 @@ HTML_PAGE = f"""<!DOCTYPE html>
         }});
         
         window.addEventListener('load', () => input.focus());
-        document.getElementById('input-area').addEventListener('click', () => input.focus());
+        inputArea.addEventListener('click', () => input.focus());
         input.addEventListener('touchstart', () => input.focus());
     </script>
 </body>
@@ -375,9 +379,11 @@ def format_tool_call(tool_name: str, args: dict, result: str | None = None) -> s
     return f'<span class="tool-name">{html.escape(tool_name)}</span>\n<div class="tool-args"><pre><code>{escaped_args}</code></pre></div>{result_html}'
 
 
+_markdown = mistune.create_markdown(plugins=["strikethrough", "table"])
+
+
 def format_message(content: str) -> str:
-    md = mistune.create_markdown(plugins=["strikethrough", "table"])
-    content = md(content)
+    content = _markdown(content)
     content = content.replace("<a href=", '<a target="_blank" href=')
     content = re.sub(r"<li>\s*<p>", "<li>", content)
     content = re.sub(r"</p>\s*</li>", "</li>", content)
@@ -459,8 +465,6 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _stream_response(self, session: Session):
-        import requests
-
         headers = {
             "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
             "Content-Type": "application/json",
@@ -469,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
 
         max_iterations = 100
 
-        for iteration in range(max_iterations):
+        for _ in range(max_iterations):
             payload = {
                 "messages": session.messages,
                 "model": os.environ["LLM_MODEL"],
