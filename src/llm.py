@@ -299,8 +299,15 @@ class FileCache:
     _storage: dict[str, str] = {}
 
     @staticmethod
+    def truncate_line(text: str, max_length: int = 200) -> str:
+        if len(text) <= max_length:
+            return text
+        return text[:max_length].rsplit(" ", 1)[0]
+
+    @staticmethod
     def store(file_id: str, content: str) -> None:
-        FileCache._storage[file_id] = content
+        lines = [FileCache.truncate_line(line) for line in content.splitlines()]
+        FileCache._storage[file_id] = "\n".join(lines)
 
     @staticmethod
     def get(file_id: str) -> str | None:
@@ -332,8 +339,13 @@ class Cache:
             if offset < 1:
                 offset = 1
 
+            if limit is None:
+                limit = 50
+            if limit < 1:
+                limit = 1
+
             start = offset - 1
-            end = total_lines if limit is None else start + limit
+            end = start + limit
 
             selected = lines[start:end]
             result = "\n".join(
