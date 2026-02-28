@@ -898,28 +898,33 @@ class Tools:
             args = {}
         result = Tools.execute(tool_name, args)
 
-        if len(result) > Config.MAX_TOOL_RESULT_CHARS:
-            file_ids = args.get("file_ids", [])
-            if isinstance(file_ids, str):
-                file_ids = [file_ids]
-            if file_ids:
-                current_limit = args.get("limit")
-                if (
-                    tool_name == "read_file"
-                    and current_limit is not None
-                    and current_limit > 10
-                ):
-                    suggested_limit = max(
-                        10,
-                        int(current_limit * Config.MAX_TOOL_RESULT_CHARS / len(result)),
-                    )
-                    result = f"Result too large ({len(result)} chars). Try read_file(file_ids={file_ids}, limit={suggested_limit}) or summarize."
-                else:
-                    result = f'Result too large ({len(result)} chars). Use summarize(file_ids={file_ids}, directives=["..."]) to extract what you need.'
-                return (tool_id, result)
-            result = f"Result too large ({len(result)} chars). Use summarize to extract what you need."
+        if len(result) <= Config.MAX_TOOL_RESULT_CHARS:
+            return (tool_id, result)
 
-        return (tool_id, result)
+        file_ids = args.get("file_ids", [])
+        if isinstance(file_ids, str):
+            file_ids = [file_ids]
+
+        if tool_name == "read_file":
+            current_limit = args.get("limit") or 50
+            if current_limit > 10:
+                suggested_limit = max(
+                    10,
+                    int(
+                        current_limit * Config.MAX_TOOL_RESULT_CHARS / len(result) * 0.8
+                    ),
+                )
+                args["limit"] = suggested_limit
+                result = Tools.execute(tool_name, args)
+                return (
+                    tool_id,
+                    f"[Truncated from limit={current_limit} to limit={suggested_limit}]\n{result}",
+                )
+
+        return (
+            tool_id,
+            f"Result too large ({len(result)} chars). Use summarize(file_ids={file_ids}, directives=[...]) to extract what you need.",
+        )
 
 
 class LLMClient:
