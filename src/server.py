@@ -381,6 +381,7 @@ def format_tool_call(tool_name: str, args: dict, result: str | None = None) -> s
 
 
 _markdown = mistune.create_markdown(
+    escape=False,
     plugins=[
         "strikethrough",
         "footnotes",
