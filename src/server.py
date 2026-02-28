@@ -72,6 +72,7 @@ body {
     border-radius: 0.5rem;
     white-space: pre-wrap;
     word-break: break-word;
+    contain: content;
     animation: messageIn 0.2s ease-out;
     scroll-margin-bottom: 60px;
 }
@@ -80,22 +81,17 @@ body {
     to { opacity: 1; transform: translateY(0); }
 }
 .message.user { align-self: flex-end; background: var(--blue); color: var(--crust); }
-.message.assistant, .message.thinking { align-self: flex-start; background: var(--surface1); }
-.message.assistant { white-space: normal; }
+.message.assistant, .message.thinking { align-self: flex-start; background: var(--surface1); white-space: normal; line-height: 1.25; }
 .message.assistant pre,
 .message.assistant code { white-space: pre-wrap; }
-.message.assistant ul,
-.message.assistant ol { padding-left: 1.25rem; margin: 0; }
-.message.assistant li { margin: 0; }
-.message.assistant li + li { margin-top: 0; }
+.message.assistant pre { margin: 0.25rem 0; padding: 0.375rem; }
+.message.assistant th, .message.assistant td { padding: 0.25rem 0.375rem; }
 .message.thinking { border-left: 3px solid var(--mauve); font-style: italic; }
 .message.thinking .thinking-header { display: block; color: var(--mauve); font-weight: 600; font-style: normal; font-family: 'SF Mono', Monaco, monospace; font-size: 0.875rem; margin-bottom: 0.25rem; }
 .message.system { align-self: flex-start; background: var(--surface2); color: var(--subtext1); font-style: italic; }
 .message.tool-call, .message.tool-result {
     align-self: flex-start;
     font-family: 'SF Mono', Monaco, monospace;
-    white-space: pre-wrap;
-    word-break: break-word;
 }
 .message.tool-call { background: var(--surface0); border-left: 3px solid var(--peach); font-size: 0.875rem; }
 .message.tool-result { background: var(--crust); border-left: 3px solid var(--teal); font-size: 0.8125rem; min-width: 200px; }
@@ -183,26 +179,20 @@ pre {
     word-break: break-word;
 }
 pre code { background: none; padding: 0; }
+img { max-width: 100%; height: auto; max-height: 80vh; object-fit: contain; }
+iframe { max-width: 100%; width: 100%; aspect-ratio: 16 / 9; height: auto; }
 table { border-collapse: collapse; width: 100%; margin: 0.25rem 0; }
 th, td { border: 1px solid var(--surface2); padding: 0.25rem 0.5rem; text-align: left; min-width: 80px; overflow-wrap: break-word; word-break: break-word; }
 th { background: var(--surface1); }
 ul, ol { padding-left: 1rem; margin: 0.25rem 0; list-style-type: disc; }
 li { margin: 0.125rem 0; display: list-item; }
+p { margin: 0.125rem 0; }
 blockquote { border-left: 3px solid var(--overlay0); padding-left: 0.5rem; margin: 0.25rem 0; color: var(--subtext1); font-style: italic; }
 hr { border: none; border-top: 1px solid var(--surface2); margin: 0.5rem 0; }
 h1, h2, h3, h4, h5, h6 { margin: 0.5rem 0 0.25rem; color: var(--text); }
 h1 { font-size: 1.25rem; }
+h2, h3 { font-size: 1rem; }
 h2 { font-size: 1.1rem; }
-h3 { font-size: 1rem; }
-.message.assistant { line-height: 1.25; }
-.message.assistant p { margin: 0; }
-.message.assistant li p { margin: 0; }
-.message.assistant pre { margin: 0.25rem 0; padding: 0.375rem; }
-.message.assistant table { margin: 0.25rem 0; }
-.message.assistant th, .message.assistant td { padding: 0.25rem 0.375rem; }
-.message.assistant ul, .message.assistant ol { padding-left: 1rem; margin: 0.25rem 0; }
-.message.assistant li { margin: 0.125rem 0; }
-.message.assistant blockquote { margin: 0.25rem 0; padding-left: 0.5rem; }
 """
 
 HTML_PAGE = f"""<!DOCTYPE html>
@@ -210,7 +200,7 @@ HTML_PAGE = f"""<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, minimal-ui">
-    <title>LLM Chat</title>
+    <title>server</title>
     <style>{CATPPUCCIN_MOCHA}</style>
 </head>
 <body>
@@ -339,13 +329,26 @@ HTML_PAGE = f"""<!DOCTYPE html>
 
 class Session:
     def __init__(self):
+        self._system_prompt = os.environ.get(
+            "LLM_SYSTEM_PROMPT", Config.get_system_prompt()
+        )
+        self._system_prompt += """\n\n
+Extra capabilities:
+* You can render HTML, make sure that when providing HTML, only provide the component you want to render without code fences.
+    * No custom HTML components, only basic HTML without comments.
+    * Take extra care to not manipulate user-space.
+    * Page is in dark mode, using catppuccin-mocha colors.
+    * Response must be contained within a single div.
+* You can fetch a list of recent global events at news.praktiskt.dev/
+    * Query params:
+        * keywords=<comma,separated,list>
+        * since=<1w, 1d, 1h, 2h, 60m and so on, set to whatever u need.>
+        * format=markdown
+    * use fetch on urls from the site to get more details and images when asked.
+* When asked about news, try to write your response as a short article on the matter, including images.
+"""
         self.messages = [
-            {
-                "role": "system",
-                "content": os.environ.get(
-                    "LLM_SYSTEM_PROMPT", Config.get_system_prompt()
-                ),
-            },
+            {"role": "system", "content": self._system_prompt},
         ]
 
 
@@ -441,6 +444,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0")
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode("utf-8"))
         else:
