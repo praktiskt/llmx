@@ -81,6 +81,13 @@ body {
 }
 .message.user { align-self: flex-end; background: var(--blue); color: var(--crust); }
 .message.assistant, .message.thinking { align-self: flex-start; background: var(--surface1); }
+.message.assistant { white-space: normal; }
+.message.assistant pre,
+.message.assistant code { white-space: pre-wrap; }
+.message.assistant ul,
+.message.assistant ol { padding-left: 1.25rem; margin: 0; }
+.message.assistant li { margin: 0; }
+.message.assistant li + li { margin-top: 0; }
 .message.thinking { border-left: 3px solid var(--mauve); font-style: italic; }
 .message.thinking .thinking-header { display: block; color: var(--mauve); font-weight: 600; font-style: normal; font-family: 'SF Mono', Monaco, monospace; font-size: 0.875rem; margin-bottom: 0.25rem; }
 .message.system { align-self: flex-start; background: var(--surface2); color: var(--subtext1); font-style: italic; }
@@ -389,7 +396,7 @@ _markdown = mistune.create_markdown(
         "math",
         "ruby",
         "spoiler",
-    ]
+    ],
 )
 
 
