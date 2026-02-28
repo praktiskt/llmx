@@ -903,7 +903,19 @@ class Tools:
             if isinstance(file_ids, str):
                 file_ids = [file_ids]
             if file_ids:
-                result = f'Result too large ({len(result)} chars). Use summarize(file_ids={file_ids}, directives=["..."]) to extract what you need.'
+                current_limit = args.get("limit")
+                if (
+                    tool_name == "read_file"
+                    and current_limit is not None
+                    and current_limit > 10
+                ):
+                    suggested_limit = max(
+                        10,
+                        int(current_limit * Config.MAX_TOOL_RESULT_CHARS / len(result)),
+                    )
+                    result = f"Result too large ({len(result)} chars). Try read_file(file_ids={file_ids}, limit={suggested_limit}) or summarize."
+                else:
+                    result = f'Result too large ({len(result)} chars). Use summarize(file_ids={file_ids}, directives=["..."]) to extract what you need.'
                 return (tool_id, result)
             result = f"Result too large ({len(result)} chars). Use summarize to extract what you need."
 
