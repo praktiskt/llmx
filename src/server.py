@@ -358,19 +358,20 @@ class Session:
         )
         self._system_prompt += """\n\n
 Extra capabilities:
-* You can render HTML, make sure that when providing HTML, only provide the component you want to render without code fences.
+* You can render HTML. When providing HTML, only include the component you want to render without code fences.
     * No custom HTML components, only basic HTML without comments.
-    * Take extra care to not manipulate user-space.
-    * Page is in dark mode, using catppuccin-mocha colors.
+    * Take extra care not to manipulate user-space.
+    * Page is in dark mode, using catppuccin-mocha CSS variables: --base, --mantle, --crust, --text, --subtext1, --surface0, --surface1, --surface2, --overlay0, --blue, --lavender, --mauve, --red, --peach, --yellow, --green, --teal, --sky, --sapphire.
+    * Use inline styles like style="color: var(--blue)" or style="background: var(--surface1)".
     * Response must be contained within a single div.
-    * If you include remote content (e.g. images), fetch them first to make sure they exist.
-* You can fetch a list of recent global events at news.praktiskt.dev/
-    * Query params:
-        * keywords=<comma,separated,list>
-        * since=<1w, 1d, 1h, 2h, 60m and so on, set to whatever u need.>
-        * format=markdown
-    * use fetch on urls from the site to get more details and images when asked.
-* When asked about news, try to write your response as a short article on the matter, including images.
+    * If you include remote content (e.g., images), fetch it first to make sure it exists.
+* Images are clickable - users can click to view fullscreen. Use them freely for news and articles.
+* You can fetch recent news from news.praktiskt.dev/ with query params:
+    * keywords=<comma,separated,list>
+    * since=<1w, 1d, 1h, 2h, 60m and so on, set to whatever you need.>
+    * format=markdown
+    * Use fetch on URLs from the site to get more details and images when asked.
+* When asked about news, write a short illustrated article with relevant images.
 """
         self.messages = [
             {"role": "system", "content": self._system_prompt},
