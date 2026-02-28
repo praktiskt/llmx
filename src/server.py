@@ -1,23 +1,29 @@
 #!/usr/bin/python3
 from __future__ import annotations
 
+import asyncio
 import html
 import json
+import logging
 import os
 import re
 import secrets
 import sys
-from contextlib import suppress
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from socketserver import ThreadingMixIn
-from urllib.parse import urlparse
+from typing import AsyncGenerator
 
+import httpx
 import mistune
-import requests
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.llm import Config, Tools
+
+for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
+    logging.getLogger(name).addFilter(
+        lambda r: not (r.exc_info and isinstance(r.exc_info[1], asyncio.CancelledError))
+    )
 
 CATPPUCCIN_MOCHA = """
 :root {
@@ -179,7 +185,11 @@ pre {
     word-break: break-word;
 }
 pre code { background: none; padding: 0; }
-img { max-width: 100%; height: auto; max-height: 80vh; object-fit: contain; }
+img { max-width: 100%; height: auto; max-height: 80vh; object-fit: contain; cursor: pointer; }
+#image-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 1000; align-items: center; justify-content: center; }
+#image-modal.active { display: flex; }
+#image-modal img { max-width: 95vw; max-height: 95vh; object-fit: contain; }
+#image-modal:active { cursor: zoom-out; }
 iframe { max-width: 100%; width: 100%; aspect-ratio: 16 / 9; height: auto; }
 table { border-collapse: collapse; width: 100%; margin: 0.25rem 0; }
 th, td { border: 1px solid var(--surface2); padding: 0.25rem 0.5rem; text-align: left; min-width: 80px; overflow-wrap: break-word; word-break: break-word; }
@@ -209,17 +219,31 @@ HTML_PAGE = f"""<!DOCTYPE html>
         <input type="text" id="msg" placeholder="Type your message..." autocomplete="off" autofocus>
         <button id="send"><span class="btn-text">Send</span><span class="spinner"></span></button>
     </div>
+    <div id="image-modal"></div>
     <script>
         const chat = document.getElementById('chat');
         const input = document.getElementById('msg');
         const sendBtn = document.getElementById('send');
         const inputArea = document.getElementById('input-area');
+        const imageModal = document.getElementById('image-modal');
+        
+        imageModal.addEventListener('click', () => imageModal.classList.remove('active'));
+        document.addEventListener('keydown', e => {{ if (e.key === 'Escape') imageModal.classList.remove('active'); }});
         
         function addMessage(content, type = 'assistant') {{
             const div = document.createElement('div');
             div.className = 'message ' + type;
             div.innerHTML = content;
             chat.appendChild(div);
+            div.querySelectorAll('img').forEach(img => {{
+                img.addEventListener('click', e => {{
+                    imageModal.innerHTML = '';
+                    const fullImg = document.createElement('img');
+                    fullImg.src = img.src;
+                    imageModal.appendChild(fullImg);
+                    imageModal.classList.add('active');
+                }});
+            }});
             const last = chat.lastElementChild;
             if (last) last.scrollIntoView({{block: 'nearest', behavior: 'auto'}});
         }}
@@ -339,6 +363,7 @@ Extra capabilities:
     * Take extra care to not manipulate user-space.
     * Page is in dark mode, using catppuccin-mocha colors.
     * Response must be contained within a single div.
+    * If you include remote content (e.g. images), fetch them first to make sure they exist.
 * You can fetch a list of recent global events at news.praktiskt.dev/
     * Query params:
         * keywords=<comma,separated,list>
@@ -403,6 +428,17 @@ _markdown = mistune.create_markdown(
     ],
 )
 
+app = FastAPI()
+
+
+def get_session_id_from_cookie(request: Request) -> str | None:
+    cookie = request.headers.get("Cookie", "")
+    for part in cookie.split(";"):
+        part = part.strip()
+        if part.startswith("session="):
+            return part[8:]
+    return None
+
 
 def format_message(content: str) -> str:
     content = content.rstrip()
@@ -414,101 +450,58 @@ def format_message(content: str) -> str:
     return content.rstrip()
 
 
-class Handler(BaseHTTPRequestHandler):
-    def handle(self):
-        try:
-            super().handle()
-        except ConnectionResetError, BrokenPipeError, OSError:
-            print(
-                f"[{datetime.now().isoformat()}] {self.address_string()} - client disconnected"
-            )
-        except Exception as e:
-            print(
-                f"[{datetime.now().isoformat()}] {self.address_string()} - error: {e}"
-            )
-            raise
+@app.get("/", response_class=HTMLResponse)
+async def get_index(request: Request):
+    return HTMLResponse(
+        content=HTML_PAGE,
+        headers={"Set-Cookie": "session=; Path=/; Max-Age=0"},
+    )
 
-    def get_session_id(self) -> str | None:
-        cookie = self.headers.get("Cookie", "")
-        for part in cookie.split(";"):
-            part = part.strip()
-            if part.startswith("session="):
-                return part[8:]
-        return None
 
-    def do_GET(self):
-        print(
-            f"[{datetime.now().isoformat()}] {self.address_string()} - GET {self.path}"
-        )
-        parsed = urlparse(self.path)
-        if parsed.path == "/":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0")
-            self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
-        else:
-            self.send_response(404)
-            self.end_headers()
+@app.post("/chat")
+async def post_chat(request: Request):
+    try:
+        data = await request.json()
+        user_message = data.get("message", "")
+    except Exception:
+        return {"error": "Invalid JSON"}
 
-    def do_POST(self):
-        print(
-            f"[{datetime.now().isoformat()}] {self.address_string()} - POST {self.path}"
-        )
-        parsed = urlparse(self.path)
-        if parsed.path != "/chat":
-            self.send_response(404)
-            self.end_headers()
-            return
+    session_id = get_session_id_from_cookie(request)
+    session, new_session_id = get_session(session_id)
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode("utf-8")
-
-        try:
-            data = json.loads(body)
-            user_message = data.get("message", "")
-        except json.JSONDecodeError:
-            self.send_response(400)
-            self.end_headers()
-            return
-
-        session_id = self.get_session_id()
-        session, new_session_id = get_session(session_id)
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Set-Cookie", f"session={new_session_id}; Path=/")
-        self.end_headers()
-
+    async def event_generator() -> AsyncGenerator[str, None]:
         session.messages.append({"role": "user", "content": user_message})
 
         try:
-            self._stream_response(session)
+            async for event in stream_response(session):
+                yield event
         except Exception as e:
-            self._send_event("message", f"Error: {str(e)}")
+            yield f"data: {json.dumps({'type': 'message', 'content': f'Error: {str(e)}'})}\n\n"
 
-        self._send_event(None, "[DONE]")
+        yield "data: [DONE]\n\n"
 
-    def _send_event(self, event_type: str | None, data: str):
-        if event_type:
-            event_json = json.dumps({"type": event_type, "content": data})
-            self.wfile.write(f"data: {event_json}\n\n".encode("utf-8"))
-        else:
-            self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
-        self.wfile.flush()
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Set-Cookie": f"session={new_session_id}; Path=/",
+        },
+    )
 
-    def _stream_response(self, session: Session):
-        headers = {
-            "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
 
-        max_iterations = 100
+async def stream_response(session: Session) -> AsyncGenerator[str, None]:
+    headers = {
+        "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
+    max_iterations = 100
+
+    async with httpx.AsyncClient(timeout=120) as client:
         for _ in range(max_iterations):
             payload = {
                 "messages": session.messages,
@@ -520,18 +513,14 @@ class Handler(BaseHTTPRequestHandler):
             if Config.tools_enabled():
                 payload["tools"] = Tools.SCHEMA
 
-            response = requests.post(
+            response = await client.post(
                 os.environ["LLM_HOST"],
                 headers=headers,
                 json=payload,
-                timeout=120,
             )
 
             if response.status_code != 200:
-                self._send_event(
-                    "message",
-                    f"API Error {response.status_code}: {response.text[:200]}",
-                )
+                yield f"data: {json.dumps({'type': 'message', 'content': f'API Error {response.status_code}: {response.text[:200]}'})}\n\n"
                 return
 
             data = response.json()
@@ -542,16 +531,17 @@ class Handler(BaseHTTPRequestHandler):
                 message.get("reasoning_content") or message.get("reasoning") or ""
             )
             if reasoning:
-                self._send_event(
-                    "thinking",
-                    f"<span class='thinking-header'>thinking</span>{html.escape(reasoning)}",
+                escaped_reasoning = html.escape(reasoning)
+                content_val = (
+                    f"<span class='thinking-header'>thinking</span>{escaped_reasoning}"
                 )
+                yield f"data: {json.dumps({'type': 'thinking', 'content': content_val})}\n\n"
 
             tool_calls = message.get("tool_calls", [])
             if not tool_calls or not Config.tools_enabled():
                 content = message.get("content", "")
                 if content:
-                    self._send_event("message", format_message(content))
+                    yield f"data: {json.dumps({'type': 'message', 'content': format_message(content)})}\n\n"
                     session.messages.append({"role": "assistant", "content": content})
                 return
 
@@ -565,8 +555,11 @@ class Handler(BaseHTTPRequestHandler):
                 except json.JSONDecodeError:
                     args = {}
 
-                tool_id, result = Tools.execute_wrapper(tool_call)
-                self._send_event("tool_call", format_tool_call(tool_name, args, result))
+                try:
+                    tool_id, result = Tools.execute_wrapper(tool_call)
+                except Exception as e:
+                    tool_id, result = "", f"Error: {str(e)}"
+                yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, result)})}\n\n"
 
                 session.messages.append(
                     {
@@ -577,18 +570,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
 
-class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads = True
-
-
 def main():
     bind = os.environ.get("LLM_BIND_ADDRESS", "0.0.0.0")
     port = int(os.environ.get("LLM_SERVER_PORT", "8080"))
-
-    print(f"Starting server at http://{bind}:{port}")
-    server = ThreadingHTTPServer((bind, port), Handler)
-    with suppress(KeyboardInterrupt):
-        server.serve_forever()
+    uvicorn.run(app, host=bind, port=port, timeout_graceful_shutdown=0)
 
 
 if __name__ == "__main__":
