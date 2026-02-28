@@ -491,6 +491,10 @@ class Tools:
                             "type": "integer",
                             "description": "Max results (default 5)",
                         },
+                        "images_only": {
+                            "type": "boolean",
+                            "description": "Search for images only (default false)",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -640,7 +644,57 @@ class Tools:
         return "\n\n---\n\n".join(results)
 
     @staticmethod
-    def search(query: str, max_results: int = 5) -> str:
+    def _search_images(query: str, max_results: int = 5) -> str:
+        from urllib.parse import quote
+
+        url = f"https://r.jina.ai/https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            html = response.text
+            results = []
+            seen_urls = set()
+
+            img_pattern = re.compile(r"!\[Image \d+:")
+            for img_match in img_pattern.finditer(html):
+                search_start = img_match.end()
+                link_match = re.search(r"\]\((https?://[^)]+)\)", html[search_start:])
+                if not link_match:
+                    continue
+
+                img_url = link_match.group(1)
+                if "duckduckgo.com" in img_url and "/iu/" not in img_url:
+                    continue
+                if img_url in seen_urls:
+                    continue
+                seen_urls.add(img_url)
+
+                parsed = urlparse(img_url)
+                params = parse_qs(parsed.query)
+                if "u" in params:
+                    target_url = unquote(params["u"][0])
+                else:
+                    target_url = img_url
+
+                title_start = img_match.end()
+                title_end = search_start + link_match.start()
+                title = html[title_start:title_end].strip()
+
+                results.append(f"{len(results) + 1}. [{title}]({target_url})")
+                if len(results) >= max_results:
+                    break
+
+            if not results:
+                return "No images found."
+            return "\n".join(results)
+        except Exception:
+            return "Image search failed."
+
+    @staticmethod
+    def search(query: str, max_results: int = 5, images_only: bool = False) -> str:
+        if images_only:
+            return Tools._search_images(query, max_results)
+
         headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -795,7 +849,9 @@ class Tools:
             return Tools.fetch(tool_args.get("urls", []))
         if tool_name == "search":
             return Tools.search(
-                tool_args.get("query", ""), tool_args.get("max_results", 5)
+                tool_args.get("query", ""),
+                tool_args.get("max_results", 5),
+                tool_args.get("images_only", False),
             )
         if tool_name == "read_file":
             file_ids = tool_args.get("file_ids", [])
