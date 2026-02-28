@@ -599,51 +599,37 @@ class Tools:
             response = requests.get(
                 fetch_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
             )
-            response.raise_for_status()
-            content_type = response.headers.get("Content-Type", "").lower()
+            if response.status_code != 200:
+                return f"HTTP {response.status_code}"
 
+            content_type = response.headers.get("Content-Type", "").lower()
             if fetch_url.startswith("https://r.jina.ai/"):
-                content = response.text
+                return response.text
             elif "text/html" in content_type or url.endswith((".html", ".htm")):
                 parser = HTMLToMarkdown()
                 parser.feed(response.text)
-                content = parser.get_markdown()
-            else:
-                content = response.text
+                return parser.get_markdown()
+            return response.text
 
-            return content if content else None
+        def store_and_return(content: str) -> str:
+            file_id = Config.generate_file_id()
+            FileCache.store(file_id, content)
+            return f'Stored as {file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (file_id="{file_id}")'
 
-        content = None
-        try:
-            fetch_url = url
-            url_lower = url.lower()
-            if any(url_lower.endswith(ext) for ext in Config.BINARY_EXTENSIONS):
-                fetch_url = f"https://r.jina.ai/{url}"
-                content = fetch_and_process(fetch_url)
-            else:
-                content = fetch_and_process(fetch_url)
-                if not content:
-                    fallback_url = f"https://r.jina.ai/{url}"
-                    content = fetch_and_process(fallback_url)
-        except requests.HTTPError:
-            try:
-                fallback_url = f"https://r.jina.ai/{url}"
-                content = fetch_and_process(fallback_url)
-            except Exception:
-                pass
-        except Exception:
-            try:
-                fallback_url = f"https://r.jina.ai/{url}"
-                content = fetch_and_process(fallback_url)
-            except Exception:
-                pass
+        url_lower = url.lower()
+        if any(url_lower.endswith(ext) for ext in Config.BINARY_EXTENSIONS):
+            result = fetch_and_process(f"https://r.jina.ai/{url}")
+        else:
+            result = fetch_and_process(url)
+            if result and not result.startswith("HTTP "):
+                return store_and_return(result)
+            result = fetch_and_process(f"https://r.jina.ai/{url}")
 
-        if not content:
-            content = "fetch failed"
+        if result and not result.startswith("HTTP "):
+            return store_and_return(result)
 
-        file_id = Config.generate_file_id()
-        FileCache.store(file_id, content)
-        return f'Stored as {file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (file_id="{file_id}")'
+        status = result if result else "unknown"
+        return f"fetch failed ({status})"
 
     @staticmethod
     def fetch(urls: list[str]) -> str:
