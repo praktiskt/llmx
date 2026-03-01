@@ -305,26 +305,18 @@ class DuckDuckGoLiteSearch(HTMLParser):
         return self.results[:max_results]
 
 
-class FileCache:
+class Cache:
     _storage: dict[str, str] = {}
 
     @staticmethod
-    def truncate_line(text: str, max_length: int = 200) -> str:
-        if len(text) <= max_length:
-            return text
-        return text[:max_length].rsplit(" ", 1)[0]
-
-    @staticmethod
     def store(file_id: str, content: str) -> None:
-        lines = [FileCache.truncate_line(line) for line in content.splitlines()]
-        FileCache._storage[file_id] = "\n".join(lines)
+        lines = [line[:200].rsplit(" ", 1)[0] for line in content.splitlines()]
+        Cache._storage[file_id] = "\n".join(lines)
 
     @staticmethod
     def get(file_id: str) -> str | None:
-        return FileCache._storage.get(file_id)
+        return Cache._storage.get(file_id)
 
-
-class Cache:
     @staticmethod
     def read(
         file_ids: list[str], offset: int | None = None, limit: int | None = None
@@ -336,7 +328,7 @@ class Cache:
                 results.append(f"Error: {validation_error}")
                 continue
 
-            content = FileCache.get(file_id)
+            content = Cache.get(file_id)
             if content is None:
                 results.append(f"Error: file {file_id} not found")
                 continue
@@ -382,7 +374,7 @@ class Cache:
                 results.append(f"Error: {validation_error}")
                 continue
 
-            content = FileCache.get(file_id)
+            content = Cache.get(file_id)
             if content is None:
                 results.append(f"Error: file {file_id} not found")
                 continue
@@ -635,7 +627,7 @@ class Tools:
 
         def store_and_return(content: str) -> str:
             file_id = Config.generate_file_id()
-            FileCache.store(file_id, content)
+            Cache.store(file_id, content)
             return f'Stored as {file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (file_id="{file_id}")'
 
         url_lower = url.lower()
@@ -828,7 +820,7 @@ class Tools:
                 tasks.append((file_id, "", f"Error: {validation_error}"))
                 continue
 
-            content = FileCache.get(file_id)
+            content = Cache.get(file_id)
             if content is None:
                 tasks.append((file_id, "", f"Error: file {file_id} not found"))
                 continue
