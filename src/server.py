@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import sys
+from html.parser import HTMLParser
 from typing import AsyncGenerator
 
 import httpx
@@ -24,6 +25,46 @@ for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
     logging.getLogger(name).addFilter(
         lambda r: not (r.exc_info and isinstance(r.exc_info[1], asyncio.CancelledError))
     )
+
+
+class M(HTMLParser):
+    o: list[str]
+    p: bool
+
+    def __init__(self, escape_code: bool = False):
+        super().__init__()
+        self.o = []
+        self.p = True
+        self.escape_code = escape_code
+        self.in_code = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.escape_code and tag == "pre":
+            self.in_code = True
+        a = "".join(f' {k}="{v}"' for k, v in attrs if v)
+        self.o.append(f"<{tag}{a}>")
+        self.p = False
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.escape_code and tag == "pre":
+            self.in_code = False
+        self.o.append(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if self.in_code:
+            data = html.escape(data)
+        self.o.append(data)
+        self.p = False
+
+    def handle_entityref(self, name: str) -> None:
+        self.o.append(f"&{name};")
+
+    @staticmethod
+    def minify_html(h: str, escape_code: bool = False) -> str:
+        m = M(escape_code=escape_code)
+        m.feed(h)
+        return re.sub(r">\s+<", "><", "".join(m.o)).strip()
+
 
 CATPPUCCIN_MOCHA = """
 :root {
@@ -358,20 +399,21 @@ class Session:
         )
         self._system_prompt += """\n\n
 Extra capabilities:
-* You can render HTML. When providing HTML, only include the component you want to render without code fences.
+* You can render HTML when asked for custom styling.
     * No custom HTML components, only basic HTML without comments.
-    * Take extra care not to manipulate user-space.
     * Page is in dark mode, using catppuccin-mocha CSS variables: --base, --mantle, --crust, --text, --subtext1, --surface0, --surface1, --surface2, --overlay0, --blue, --lavender, --mauve, --red, --peach, --yellow, --green, --teal, --sky, --sapphire.
-    * Use inline styles like style="color: var(--blue)" or style="background: var(--surface1)".
+    * Use inline styles like style="color: var(--blue)" or style="background: var(--surface1)". Do not use global style changes.
     * Response must be contained within a single div.
-    * If you include remote content (e.g., images), fetch it first to make sure it exists.
-* Images are clickable - users can click to view fullscreen. Use them freely for news and articles.
+    * If you include remote content (e.g., images), use the fetch tool to verify the content exists.
 * You can fetch recent news from news.praktiskt.dev/ with query params:
     * keywords=<comma,separated,list>
     * since=<1w, 1d, 1h, 2h, 60m and so on, set to whatever you need.>
     * format=markdown
     * Use fetch on URLs from the site to get more details and images when asked.
-* When asked about news, write a short illustrated article with relevant images.
+* When asked about news, write a short news article.
+    * Focus on mobile-first layout.
+    * If images are not present in the content you have, research the story to locate relevant images.
+    * Clearly outline the timeline of events on developing stories.
 """
         self.messages = [
             {"role": "system", "content": self._system_prompt},
@@ -444,10 +486,40 @@ def get_session_id_from_cookie(request: Request) -> str | None:
 def format_message(content: str) -> str:
     content = content.rstrip()
     content = re.sub(r"•\s*", "- ", content)
-    content = _markdown(content)
+
+    # Check for code fences BEFORE markdown processing
+    has_backticks = "```" in content
+
+    # Use escape=True if backticks present (show code), else escape=False (render HTML)
+    md = (
+        mistune.create_markdown(
+            escape=has_backticks,
+            plugins=[
+                "strikethrough",
+                "footnotes",
+                "table",
+                "url",
+                "task_lists",
+                "def_list",
+                "abbr",
+                "mark",
+                "insert",
+                "superscript",
+                "subscript",
+                "math",
+                "ruby",
+                "spoiler",
+            ],
+        )
+        if has_backticks
+        else _markdown
+    )
+    content = md(content)
+
     content = content.replace("<a href=", '<a target="_blank" href=')
     content = re.sub(r"(<table>)", r"<div style='overflow-x:auto'>\1", content)
     content = re.sub(r"(</table>)", r"\1</div>", content)
+    content = M.minify_html(content, escape_code=has_backticks)
     return content.rstrip()
 
 
