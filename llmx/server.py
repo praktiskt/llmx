@@ -28,6 +28,19 @@ for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
     )
 
 
+_http_client: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            timeout=120,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+    return _http_client
+
+
 class M(HTMLParser):
     o: list[str]
     p: bool
@@ -422,6 +435,7 @@ Extra capabilities:
     * Use inline styles like style="color: var(--blue)" or style="background: var(--surface1)". Do not use global style changes.
     * Response must be contained within a single div.
     * If you include remote content (e.g., images), use the fetch tool to verify the content exists.
+    * If tables are included, make sure they are horizontably scrollable.
 * You can fetch recent news from news.praktiskt.dev/ with query params:
     * keywords=<comma,separated,list>
     * since=<1w, 1d, 1h, 2h, 60m and so on, set to whatever you need.>
@@ -504,35 +518,27 @@ def format_message(content: str) -> str:
     content = content.rstrip()
     content = re.sub(r"•\s*", "- ", content)
 
-    # Check for code fences BEFORE markdown processing
     has_backticks = "```" in content
-
-    # Use escape=True if backticks present (show code), else escape=False (render HTML)
-    md = (
-        mistune.create_markdown(
-            escape=has_backticks,
-            plugins=[
-                "strikethrough",
-                "footnotes",
-                "table",
-                "url",
-                "task_lists",
-                "def_list",
-                "abbr",
-                "mark",
-                "insert",
-                "superscript",
-                "subscript",
-                "math",
-                "ruby",
-                "spoiler",
-            ],
-        )
-        if has_backticks
-        else _markdown
+    md = mistune.create_markdown(
+        escape=has_backticks,
+        plugins=[
+            "strikethrough",
+            "footnotes",
+            "table",
+            "url",
+            "task_lists",
+            "def_list",
+            "abbr",
+            "mark",
+            "insert",
+            "superscript",
+            "subscript",
+            "math",
+            "ruby",
+            "spoiler",
+        ],
     )
     content = md(content)  # type: ignore[assignment]
-
     content = content.replace("<a href=", '<a target="_blank" href=')
     content = re.sub(r"(<table>)", r"<div style='overflow-x:auto'>\1", content)
     content = re.sub(r"(</table>)", r"\1</div>", content)
@@ -589,7 +595,7 @@ async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str
 
     for attempt in range(max_retries):
         try:
-            return Tools.execute_wrapper(tool_call)
+            return await Tools.execute_wrapper(tool_call)
         except Exception as e:
             if attempt < max_retries - 1:
                 logger.warning(
@@ -613,90 +619,105 @@ async def stream_response(session: Session) -> AsyncGenerator[str, None]:
 
     max_iterations = 100
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        for _ in range(max_iterations):
-            payload = {
-                "messages": session.messages,
-                "model": os.environ["LLM_MODEL"],
-                "temperature": float(os.environ.get("LLM_TEMPERATURE", 0.1)),
-                "stream": False,
-            }
+    client = get_http_client()
+    for _ in range(max_iterations):
+        payload = {
+            "messages": session.messages,
+            "model": os.environ["LLM_MODEL"],
+            "temperature": float(os.environ.get("LLM_TEMPERATURE", 0.1)),
+            "stream": False,
+        }
 
-            if Config.tools_enabled():
-                payload["tools"] = Tools.SCHEMA
+        if Config.tools_enabled():
+            payload["tools"] = Tools.SCHEMA
 
-            response = None
-            for attempt in range(5):
-                response = await client.post(
-                    os.environ["LLM_HOST"],
-                    headers=headers,
-                    json=payload,
-                )
-
-                if response.status_code == 200:
-                    break
-
-                if response.status_code == 429:
-                    logger.warning(
-                        f"API rate limited (attempt {attempt + 1}/5), retrying..."
-                    )
-                    continue
-
-                yield f"data: {json.dumps({'type': 'message', 'content': f'API Error {response.status_code}: {response.text[:200]}'})}\n\n"
-                return
-
-            if response is None or response.status_code != 200:
-                yield f"data: {json.dumps({'type': 'message', 'content': 'API Error: Max retries exceeded'})}\n\n"
-                return
-
-            data = response.json()
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
-
-            reasoning = (
-                message.get("reasoning_content") or message.get("reasoning") or ""
+        response = None
+        for attempt in range(5):
+            response = await client.post(
+                os.environ["LLM_HOST"],
+                headers=headers,
+                json=payload,
             )
-            if reasoning:
-                escaped_reasoning = html.escape(reasoning)
-                content_val = (
-                    f"<span class='thinking-header'>thinking</span>{escaped_reasoning}"
+
+            if response.status_code == 200:
+                break
+
+            if response.status_code == 429:
+                logger.warning(
+                    f"API rate limited (attempt {attempt + 1}/5), retrying..."
                 )
-                yield f"data: {json.dumps({'type': 'thinking', 'content': content_val})}\n\n"
+                continue
 
-            tool_calls = message.get("tool_calls", [])
-            if not tool_calls or not Config.tools_enabled():
-                content = message.get("content", "")
-                if content:
-                    yield f"data: {json.dumps({'type': 'message', 'content': format_message(content)})}\n\n"
-                    session.messages.append({"role": "assistant", "content": content})
-                return
-
-            session.messages.append(message)
-
-            for tool_call in tool_calls:
-                func = tool_call.get("function", {})
-                tool_name = func.get("name", "unknown")
-                try:
-                    args = json.loads(func.get("arguments", "{}"))
-                except json.JSONDecodeError:
-                    args = {}
-
-                tool_id, result = await execute_with_retry(tool_call)
-                yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, result)})}\n\n"
-
-                session.messages.append(
+            yield (
+                "data: "
+                + json.dumps(
                     {
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "content": result,
+                        "type": "message",
+                        "content": "API Error "
+                        + str(response.status_code)
+                        + ": "
+                        + response.text[:200],
                     }
                 )
+                + "\n\n"
+            )
+            return
+
+        if response is None or response.status_code != 200:
+            yield f"data: {json.dumps({'type': 'message', 'content': 'API Error: Max retries exceeded'})}\n\n"
+            return
+
+        data = response.json()
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message", {})
+
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        if reasoning:
+            escaped_reasoning = html.escape(reasoning)
+            content_val = (
+                f"<span class='thinking-header'>thinking</span>{escaped_reasoning}"
+            )
+            yield f"data: {json.dumps({'type': 'thinking', 'content': content_val})}\n\n"
+
+        tool_calls = message.get("tool_calls", [])
+        if not tool_calls or not Config.tools_enabled():
+            content = message.get("content", "")
+            if content:
+                yield f"data: {json.dumps({'type': 'message', 'content': format_message(content)})}\n\n"
+                session.messages.append({"role": "assistant", "content": content})
+            return
+
+        session.messages.append(message)
+
+        for tool_call in tool_calls:
+            func = tool_call.get("function", {})
+            tool_name = func.get("name", "unknown")
+            try:
+                args = json.loads(func.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+
+            tool_id, result = await execute_with_retry(tool_call)
+            yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, result)})}\n\n"
+
+            session.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": result,
+                }
+            )
 
 
 def main():
     bind = os.environ.get("LLM_BIND_ADDRESS", "0.0.0.0")
     port = int(os.environ.get("LLM_SERVER_PORT", "8080"))
-    uvicorn.run(app, host=bind, port=port, timeout_graceful_shutdown=0)
+    uvicorn.run(
+        "llmx.server:app",
+        host=bind,
+        port=port,
+        timeout_graceful_shutdown=0,
+    )
 
 
 if __name__ == "__main__":
