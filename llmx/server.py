@@ -10,7 +10,10 @@ import re
 import secrets
 import traceback
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import AsyncGenerator
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,7 @@ import mistune
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from .llm import Config, Tools
 
@@ -78,373 +82,6 @@ class M(HTMLParser):
         m = M(escape_code=escape_code)
         m.feed(h)
         return re.sub(r">\s+<", "><", "".join(m.o)).strip()
-
-
-CATPPUCCIN_MOCHA = """
-:root {
-    --base: #1e1e2e;
-    --mantle: #181825;
-    --crust: #11111b;
-    --text: #cdd6f4;
-    --subtext1: #a6adc8;
-    --subtext0: #9399b2;
-    --overlay2: #7f849c;
-    --overlay1: #6c7086;
-    --overlay0: #585b70;
-    --surface0: #1e1e2e;
-    --surface1: #313244;
-    --surface2: #45475a;
-    --blue: #89b4fa;
-    --lavender: #b4befe;
-    --mauve: #cba6f7;
-    --red: #f38ba8;
-    --maroon: #eba6ac;
-    --peach: #fab387;
-    --yellow: #f9e2af;
-    --green: #a6e3a1;
-    --teal: #94e2d5;
-    --sky: #89dceb;
-    --sapphire: #74c7ec;
-    --font-mono: 'SF Mono', Monaco, monospace;
-    --radius: 0.5rem;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-    background: var(--base);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    height: 100dvh;
-    display: flex;
-    flex-direction: column;
-}
-#chat {
-    flex: 1;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    padding: 0.5rem;
-    padding-bottom: 4.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-}
-.message {
-    max-width: 100%;
-    padding: 0.5rem 0.75rem;
-    border-radius: var(--radius);
-    white-space: pre-wrap;
-    word-break: break-word;
-    contain: content;
-    animation: messageIn 0.2s ease-out;
-    scroll-margin-bottom: 60px;
-}
-@keyframes messageIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-.message.user { align-self: flex-end; background: var(--blue); color: var(--crust); }
-.message.assistant, .message.thinking { align-self: flex-start; background: var(--surface1); white-space: normal; line-height: 1.25; }
-.message.assistant pre,
-.message.assistant code { white-space: pre-wrap; }
-.message.assistant pre { margin: 0.25rem 0; padding: 0.375rem; }
-.message.assistant th, .message.assistant td { padding: 0.25rem 0.375rem; }
-.message.thinking { border-left: 3px solid var(--mauve); font-style: italic; }
-.message.thinking .thinking-header { display: block; color: var(--mauve); font-weight: 600; font-style: normal; font-family: var(--font-mono); font-size: 0.875rem; margin-bottom: 0.25rem; }
-.message.system { align-self: flex-start; background: var(--surface2); color: var(--subtext1); font-style: italic; }
-.message.tool-call, .message.tool-result {
-    align-self: flex-start;
-    font-family: var(--font-mono);
-}
-.message.tool-call { background: var(--surface1); border-left: 3px solid var(--peach); font-size: 0.875rem; }
-.message.tool-result { background: var(--crust); border-left: 3px solid var(--teal); font-size: 0.8125rem; min-width: 200px; }
-.tool-call .tool-name { color: var(--peach); font-weight: 600; }
-.tool-call .tool-args { color: var(--subtext1); margin-top: 0.25rem; }
-.result-toggle {
-    color: var(--teal);
-    cursor: pointer;
-    font-size: 0.75rem;
-    user-select: none;
-}
-.result-toggle.expanded { color: var(--mauve); }
-.result-content.collapsed { display: none; }
-.tool-result .result-label { color: var(--teal); }
-#input-area {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: var(--mantle);
-    padding: 0.75rem;
-    border-top: 1px solid var(--surface1);
-    display: flex;
-    gap: 0.5rem;
-}
-#input-area input {
-    flex: 1;
-    background: var(--surface1);
-    border: 1px solid var(--surface2);
-    border-radius: var(--radius);
-    padding: 0.5rem 0.75rem;
-    color: var(--text);
-    font-size: 1rem;
-    outline: none;
-    cursor: pointer;
-    touch-action: manipulation;
-}
-#input-area input:focus { border-color: var(--blue); }
-#input-area button {
-    background: var(--blue);
-    color: var(--crust);
-    border: none;
-    border-radius: var(--radius);
-    padding: 0.5rem 1rem;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-#input-area button:hover { background: var(--sapphire); }
-#input-area button:disabled { background: var(--surface2); cursor: not-allowed; }
-#input-area button.loading { background: var(--peach); }
-#input-area button#new {
-    background: var(--red);
-    color: var(--crust);
-    padding: 0.625rem 1rem;
-}
-#input-area button .spinner { display: none; }
-#input-area button.loading .spinner { display: inline-block; animation: pulse 2s ease-in-out infinite; }
-#input-area button.loading .btn-text { display: none; }
-
-@keyframes pulse {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.1); }
-}
-.typing { display: inline-block; }
-.typing::after {
-    content: '';
-    animation: dots 1.5s infinite;
-}
-@keyframes dots {
-    0%, 20% { content: '.'; }
-    40% { content: '..'; }
-    60%, 100% { content: '...'; }
-}
-a { color: var(--sky); }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: var(--crust); }
-::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--overlay1); }
-code {
-    background: var(--surface2);
-    padding: 0.125rem 0.375rem;
-    border-radius: 0.25rem;
-    font-family: var(--font-mono);
-    font-size: 0.875em;
-}
-pre {
-    background: var(--crust);
-    padding: 0.75rem;
-    border-radius: var(--radius);
-    overflow-x: auto;
-    margin: 0.5rem 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-pre code { background: none; padding: 0; }
-img { max-width: 100%; height: auto; max-height: 80vh; object-fit: contain; cursor: pointer; }
-#image-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 1000; align-items: center; justify-content: center; }
-#image-modal.active { display: flex; }
-#image-modal img { max-width: 95vw; max-height: 95vh; object-fit: contain; }
-#image-modal:active { cursor: zoom-out; }
-iframe { max-width: 100%; width: 100%; aspect-ratio: 16 / 9; height: auto; }
-table { border-collapse: collapse; width: 100%; margin: 0.25rem 0; }
-th, td { border: 1px solid var(--surface2); padding: 0.25rem 0.5rem; text-align: left; min-width: 80px; overflow-wrap: break-word; word-break: break-word; }
-th { background: var(--surface1); }
-ul, ol { padding-left: 1rem; margin: 0.25rem 0; list-style-type: disc; }
-li { margin: 0.125rem 0; display: list-item; }
-p { margin: 0.125rem 0; }
-blockquote { border-left: 3px solid var(--overlay0); padding-left: 0.5rem; margin: 0.25rem 0; color: var(--subtext1); font-style: italic; }
-hr { border: none; border-top: 1px solid var(--surface2); margin: 0.5rem 0; }
-h1, h2, h3, h4, h5, h6 { margin: 0.5rem 0 0.25rem; color: var(--text); }
-h1 { font-size: 1.25rem; }
-h2, h3 { font-size: 1rem; }
-h2 { font-size: 1.1rem; }
-"""
-
-HTML_PAGE = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, minimal-ui">
-    <title>server</title>
-    <style>{CATPPUCCIN_MOCHA}</style>
-</head>
-<body>
-    <div id="chat"></div>
-    <div id="input-area">
-        <input type="text" id="msg" placeholder="Type your message..." autocomplete="off" autofocus>
-        <button id="send"><span class="btn-text">send</span><span class="spinner">stop</span></button>
-        <button id="new" title="New session">new</button>
-    </div>
-    <div id="image-modal"></div>
-    <script>
-        const chat = document.getElementById('chat');
-        const input = document.getElementById('msg');
-        const sendBtn = document.getElementById('send');
-        const trashBtn = document.getElementById('new');
-        const inputArea = document.getElementById('input-area');
-        const imageModal = document.getElementById('image-modal');
-        let abortController = null;
-        
-        imageModal.addEventListener('click', () => imageModal.classList.remove('active'));
-        document.addEventListener('keydown', e => {{ 
-            if (e.key === 'Escape') {{
-                if (imageModal.classList.contains('active')) {{
-                    imageModal.classList.remove('active');
-                }} else if (abortController) {{
-                    abortController.abort();
-                }}
-            }}
-        }});
-        
-        function addMessage(content, type = 'assistant') {{
-            const div = document.createElement('div');
-            div.className = 'message ' + type;
-            div.innerHTML = content;
-            chat.appendChild(div);
-            div.querySelectorAll('img').forEach(img => {{
-                img.addEventListener('click', e => {{
-                    imageModal.innerHTML = '';
-                    const fullImg = document.createElement('img');
-                    fullImg.src = img.src;
-                    imageModal.appendChild(fullImg);
-                    imageModal.classList.add('active');
-                }});
-            }});
-            const last = chat.lastElementChild;
-            if (last) last.scrollIntoView({{block: 'nearest', behavior: 'auto'}});
-        }}
-        
-        function setTyping() {{
-            addMessage('<span class="typing">Thinking</span>', 'system');
-        }}
-        
-        function clearTyping() {{
-            chat.querySelectorAll('.message.system').forEach(el => el.remove());
-        }}
-        
-        async function send() {{
-            const msg = input.value.trim();
-            if (!msg) return;
-            
-            addMessage(msg, 'user');
-            input.value = '';
-            sendBtn.disabled = false;
-            sendBtn.classList.add('loading');
-            abortController = new AbortController();
-            
-            setTyping();
-            
-            try {{
-                const res = await fetch('/chat', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{message: msg}}),
-                    signal: abortController.signal
-                }});
-                
-                if (!res.ok) {{
-                    clearTyping();
-                    addMessage('Error: ' + res.status, 'system');
-                    sendBtn.disabled = false;
-                    sendBtn.classList.remove('loading');
-                    return;
-                }}
-                
-                clearTyping();
-                const reader = res.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-                let done = false;
-                
-                while (!done) {{
-                    const result = await reader.read();
-                    done = result.done;
-                    
-                    if (result.value) {{
-                        buffer += decoder.decode(result.value, {{stream: !done}});
-                        const lines = buffer.split('\\n');
-                        buffer = lines.pop() || '';
-                        
-                        for (const line of lines) {{
-                            if (line.startsWith('data: ')) {{
-                                const data = line.slice(6);
-                                if (data === '[DONE]') {{
-                                    done = true;
-                                    break;
-                                }}
-                                try {{
-                                    const event = JSON.parse(data);
-                                    handleEvent(event);
-                                }} catch (e) {{
-                                }}
-                            }}
-                        }}
-                    }}
-                }}
-            }} catch (e) {{
-                clearTyping();
-                if (e.name === 'AbortError') {{
-                    addMessage('<span style="color: var(--peach)">Stopped</span>', 'system');
-                }} else {{
-                    addMessage('Error: ' + e.message, 'system');
-                }}
-            }}
-            
-            sendBtn.disabled = false;
-            sendBtn.classList.remove('loading');
-            abortController = null;
-        }}
-        
-        function handleEvent(event) {{
-            const type = event.type;
-            const content = event.content || '';
-            
-            if (type === 'thinking') {{
-                addMessage(content, 'thinking');
-            }} else if (type === 'tool_call') {{
-                addMessage(content, 'tool-call');
-            }} else if (type === 'message') {{
-                addMessage(content, 'assistant');
-            }}
-        }}
-        
-        sendBtn.addEventListener('click', () => {{
-            if (sendBtn.classList.contains('loading') && abortController) {{
-                abortController.abort();
-                return;
-            }}
-            send();
-        }});
-        trashBtn.addEventListener('click', () => {{
-            if (confirm('Will create a new session and delete this, continue?')) {{
-                window.location.href = '/';
-            }}
-        }});
-        input.addEventListener('keydown', e => {{
-            if (e.key === 'Enter' && !e.shiftKey) {{
-                e.preventDefault();
-                send();
-            }}
-        }});
-        
-        window.addEventListener('load', () => input.focus());
-        inputArea.addEventListener('click', () => input.focus());
-        input.addEventListener('touchstart', () => input.focus());
-    </script>
-</body>
-</html>"""
 
 
 class Session:
@@ -528,6 +165,7 @@ _markdown = mistune.create_markdown(
 )
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def get_session_id_from_cookie(request: Request) -> str | None:
@@ -573,8 +211,9 @@ def format_message(content: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index(request: Request):
+    html_path = STATIC_DIR / "index.html"
     return HTMLResponse(
-        content=HTML_PAGE,
+        content=html_path.read_text(),
         headers={"Set-Cookie": "session=; Path=/; Max-Age=0"},
     )
 
