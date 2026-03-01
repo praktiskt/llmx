@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import secrets
-import sys
 import traceback
 from html.parser import HTMLParser
 from typing import AsyncGenerator
@@ -186,7 +185,7 @@ body {
     color: var(--crust);
     border: none;
     border-radius: var(--radius);
-    padding: 0.5rem 1rem;
+    padding: 0.625rem 1.25rem;
     font-size: 1rem;
     font-weight: 600;
     cursor: pointer;
@@ -194,6 +193,11 @@ body {
 }
 #input-area button:hover { background: var(--sapphire); }
 #input-area button:disabled { background: var(--surface2); cursor: not-allowed; }
+#input-area button#trash {
+    background: var(--red);
+    color: var(--crust);
+    padding: 0.625rem 1rem;
+}
 #input-area button .spinner { display: none; width: 18px; height: 18px; border: 2px solid var(--text); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
 #input-area button.loading .spinner { display: inline-block; }
 #input-area button.loading .btn-text { display: none; }
@@ -263,12 +267,14 @@ HTML_PAGE = f"""<!DOCTYPE html>
     <div id="input-area">
         <input type="text" id="msg" placeholder="Type your message..." autocomplete="off" autofocus>
         <button id="send"><span class="btn-text">Send</span><span class="spinner"></span></button>
+        <button id="trash" title="Clear session">🗑️</button>
     </div>
     <div id="image-modal"></div>
     <script>
         const chat = document.getElementById('chat');
         const input = document.getElementById('msg');
         const sendBtn = document.getElementById('send');
+        const trashBtn = document.getElementById('trash');
         const inputArea = document.getElementById('input-area');
         const imageModal = document.getElementById('image-modal');
         
@@ -381,6 +387,11 @@ HTML_PAGE = f"""<!DOCTYPE html>
         }}
         
         sendBtn.addEventListener('click', send);
+        trashBtn.addEventListener('click', () => {{
+            if (confirm('Are you sure?')) {{
+                window.location.href = '/';
+            }}
+        }});
         input.addEventListener('keydown', e => {{
             if (e.key === 'Enter' && !e.shiftKey) {{
                 e.preventDefault();
@@ -633,7 +644,7 @@ async def stream_response(session: Session) -> AsyncGenerator[str, None]:
                 return
 
             if response is None or response.status_code != 200:
-                yield f"data: {json.dumps({'type': 'message', 'content': f'API Error: Max retries exceeded'})}\n\n"
+                yield f"data: {json.dumps({'type': 'message', 'content': 'API Error: Max retries exceeded'})}\n\n"
                 return
 
             data = response.json()
