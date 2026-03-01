@@ -185,7 +185,7 @@ body {
     color: var(--crust);
     border: none;
     border-radius: var(--radius);
-    padding: 0.625rem 1.25rem;
+    padding: 0.5rem 1rem;
     font-size: 1rem;
     font-weight: 600;
     cursor: pointer;
@@ -193,6 +193,7 @@ body {
 }
 #input-area button:hover { background: var(--sapphire); }
 #input-area button:disabled { background: var(--surface2); cursor: not-allowed; }
+#input-area button.loading { background: var(--peach); }
 #input-area button#trash {
     background: var(--red);
     color: var(--crust);
@@ -200,6 +201,7 @@ body {
 }
 #input-area button .spinner { display: none; width: 18px; height: 18px; border: 2px solid var(--text); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
 #input-area button.loading .spinner { display: inline-block; }
+#input-area button.loading .spinner { border-color: var(--crust); border-top-color: transparent; }
 #input-area button.loading .btn-text { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .typing { display: inline-block; }
