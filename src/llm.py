@@ -993,9 +993,7 @@ class LLMClient:
             )
 
             if 400 <= response.status_code < 500:
-                Log.stderr(
-                    f"{response.status_code}: {response.content.decode()}, retrying..."
-                )
+                Log.stderr(f"{response.status_code}: {response.content.decode()}, retrying...")
                 response = requests.post(
                     os.environ["LLM_HOST"],
                     headers=headers,
