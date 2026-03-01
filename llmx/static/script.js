@@ -53,6 +53,7 @@ async function send() {
     input.value = '';
     sendBtn.disabled = false;
     sendBtn.classList.add('loading');
+    inputArea.classList.add('loading');
     abortController = new AbortController();
     
     setTyping();
@@ -70,6 +71,7 @@ async function send() {
             addMessage(`Error: ${res.status}`, 'system');
             sendBtn.disabled = false;
             sendBtn.classList.remove('loading');
+            inputArea.classList.remove('loading');
             return;
         }
         
@@ -115,6 +117,7 @@ async function send() {
     
     sendBtn.disabled = false;
     sendBtn.classList.remove('loading');
+    inputArea.classList.remove('loading');
     abortController = null;
 }
 
