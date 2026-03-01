@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
@@ -8,13 +9,22 @@ import re
 import string
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
+
+
+class AsyncHttp:
+    @staticmethod
+    async def get(url: str, **kwargs) -> requests.Response:
+        return await asyncio.to_thread(requests.get, url, **kwargs)
+
+    @staticmethod
+    async def post(url: str, **kwargs) -> requests.Response:
+        return await asyncio.to_thread(requests.post, url, **kwargs)
 
 
 class Log:
@@ -265,12 +275,12 @@ class DuckDuckGoLiteSearch(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs_dict = dict(attrs)
-        if tag == "a" and attrs_dict.get("href", "").startswith(
-            "//duckduckgo.com/l/?uddg="
-        ):
-            self.in_link = True
-            self.current_url = attrs_dict.get("href", "")
-            self.current_title = ""
+        if tag == "a":
+            href = attrs_dict.get("href", "")
+            if isinstance(href, str) and href.startswith("//duckduckgo.com/l/?uddg="):
+                self.in_link = True
+                self.current_url = href
+                self.current_title = ""
 
     def handle_endtag(self, tag):
         if tag == "a" and self.in_link:
@@ -598,18 +608,26 @@ class Tools:
     ]
 
     @staticmethod
-    def _fetch_single(url: str) -> str:
-        def fetch_and_process(fetch_url: str) -> str | None:
-            response = requests.get(
-                fetch_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
+    async def _fetch_single(url: str) -> str:
+        original_url = url
+
+        async def fetch_and_process(fetch_url: str) -> str | None:
+            response = await AsyncHttp.get(
+                fetch_url,
+                timeout=30,
+                headers={"User-Agent": "Mozilla/5.0"},
             )
             if response.status_code != 200:
                 return f"HTTP {response.status_code}"
 
             content_type = response.headers.get("Content-Type", "").lower()
-            if fetch_url.startswith("https://r.jina.ai/"):
+            if isinstance(fetch_url, str) and fetch_url.startswith(
+                "https://r.jina.ai/"
+            ):
                 return response.text
-            elif "text/html" in content_type or url.endswith((".html", ".htm")):
+            elif "text/html" in content_type or original_url.endswith(
+                (".html", ".htm")
+            ):
                 parser = HTMLToMarkdown()
                 parser.feed(response.text)
                 return parser.get_markdown()
@@ -622,12 +640,12 @@ class Tools:
 
         url_lower = url.lower()
         if any(url_lower.endswith(ext) for ext in Config.BINARY_EXTENSIONS):
-            result = fetch_and_process(f"https://r.jina.ai/{url}")
+            result = await fetch_and_process(f"https://r.jina.ai/{url}")
         else:
-            result = fetch_and_process(url)
+            result = await fetch_and_process(url)
             if result and not result.startswith("HTTP "):
                 return store_and_return(result)
-            result = fetch_and_process(f"https://r.jina.ai/{url}")
+            result = await fetch_and_process(f"https://r.jina.ai/{url}")
 
         if result and not result.startswith("HTTP "):
             return store_and_return(result)
@@ -636,20 +654,20 @@ class Tools:
         return f"fetch failed ({status})"
 
     @staticmethod
-    def fetch(urls: list[str]) -> str:
+    async def fetch(urls: list[str]) -> str:
         results = []
         for url in urls:
-            result = Tools._fetch_single(url)
+            result = await Tools._fetch_single(url)
             results.append(f"{url}: {result}")
         return "\n\n---\n\n".join(results)
 
     @staticmethod
-    def _search_images(query: str, max_results: int = 5) -> str:
+    async def _search_images(query: str, max_results: int = 5) -> str:
         from urllib.parse import quote
 
         url = f"https://r.jina.ai/https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
         try:
-            response = requests.get(url, timeout=30)
+            response = await AsyncHttp.get(url, timeout=30)
             response.raise_for_status()
             html = response.text
             results = []
@@ -691,9 +709,11 @@ class Tools:
             return "Image search failed."
 
     @staticmethod
-    def search(query: str, max_results: int = 5, images_only: bool = False) -> str:
+    async def search(
+        query: str, max_results: int = 5, images_only: bool = False
+    ) -> str:
         if images_only:
-            return Tools._search_images(query, max_results)
+            return await Tools._search_images(query, max_results)
 
         headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
@@ -726,7 +746,7 @@ class Tools:
             url = f"{url_prefix}{query}"
             for attempt, delay in enumerate(delays):
                 try:
-                    response = requests.get(url, timeout=30, headers=headers)
+                    response = await AsyncHttp.get(url, timeout=30, headers=headers)
                     response.raise_for_status()
 
                     if endpoint_type == "jina":
@@ -751,14 +771,14 @@ class Tools:
         return "Search failed after retries."
 
     @staticmethod
-    def summarize(
+    async def summarize(
         file_ids: list[str],
         directives: list[str],
         max_length: int = 1000,
         offset: int | None = None,
         limit: int | None = None,
     ) -> str:
-        def summarize_task(task: tuple) -> tuple:
+        async def summarize_task(task: tuple) -> tuple:
             file_id, directive, content = task
             tokens_for_summary = max(250, max_length * 2)
             messages = [
@@ -783,19 +803,12 @@ class Tools:
             }
 
             try:
-                response = requests.post(
+                response = await AsyncHttp.post(
                     os.environ["LLM_HOST"],
                     headers=headers,
                     json=payload,
                     timeout=60,
                 )
-                if 400 <= response.status_code < 500:
-                    response = requests.post(
-                        os.environ["LLM_HOST"],
-                        headers=headers,
-                        json=payload,
-                        timeout=60,
-                    )
                 if response.status_code != 200:
                     return (file_id, directive, f"Error: {response.status_code}")
 
@@ -831,31 +844,32 @@ class Tools:
             for directive in directives:
                 tasks.append((file_id, directive, content))
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {executor.submit(summarize_task, task): task[0] for task in tasks}
-            results_map = {}
-            for future in as_completed(futures):
-                file_id, directive, result = future.result()
-                if file_id not in results_map:
-                    results_map[file_id] = []
-                results_map[file_id].append(result)
+        async def run_task(task: tuple) -> tuple:
+            return await summarize_task(task)
 
-        results = []
+        results = await asyncio.gather(*(run_task(task) for task in tasks))
+        results_map: dict[str, list[str]] = {}
+        for file_id, directive, result in results:
+            if file_id not in results_map:
+                results_map[file_id] = []
+            results_map[file_id].append(result)
+
+        final_results = []
         for file_id in file_ids:
             if file_id not in results_map:
                 continue
             summaries = results_map[file_id]
             file_summaries = [f"{i}. {s}" for i, s in enumerate(summaries, 1)]
-            results.append(f"File {file_id}:\n" + "\n\n".join(file_summaries))
+            final_results.append(f"File {file_id}:\n" + "\n\n".join(file_summaries))
 
-        return "\n\n---\n\n".join(results)
+        return "\n\n---\n\n".join(final_results)
 
     @staticmethod
-    def execute(tool_name: str, tool_args: dict) -> str:
+    async def execute(tool_name: str, tool_args: dict) -> str:
         if tool_name == "fetch":
-            return Tools.fetch(tool_args.get("urls", []))
+            return await Tools.fetch(tool_args.get("urls", []))
         if tool_name == "search":
-            return Tools.search(
+            return await Tools.search(
                 tool_args.get("query", ""),
                 tool_args.get("max_results", 5),
                 tool_args.get("images_only", False),
@@ -873,7 +887,7 @@ class Tools:
             file_ids = tool_args.get("file_ids", [])
             if isinstance(file_ids, str):
                 file_ids = [file_ids]
-            return Tools.summarize(
+            return await Tools.summarize(
                 file_ids,
                 tool_args.get("directives", []),
                 tool_args.get("max_length", 1000),
@@ -894,7 +908,7 @@ class Tools:
         return f"Unknown tool: {tool_name}"
 
     @staticmethod
-    def execute_wrapper(tool_call: dict) -> tuple[str, str]:
+    async def execute_wrapper(tool_call: dict) -> tuple[str, str]:
         tool_id = tool_call.get("id", "")
         func = tool_call.get("function", {})
         tool_name = func.get("name", "")
@@ -903,7 +917,7 @@ class Tools:
             args = json.loads(args_str)
         except json.JSONDecodeError:
             args = {}
-        result = Tools.execute(tool_name, args)
+        result = await Tools.execute(tool_name, args)
 
         if len(result) <= Config.MAX_TOOL_RESULT_CHARS:
             return (tool_id, result)
@@ -922,7 +936,7 @@ class Tools:
                     ),
                 )
                 args["limit"] = suggested_limit
-                result = Tools.execute(tool_name, args)
+                result = await Tools.execute(tool_name, args)
                 return (
                     tool_id,
                     f"[Truncated from limit={current_limit} to limit={suggested_limit}]\n{result}",
@@ -966,7 +980,7 @@ class LLMClient:
         return json.dumps(d)
 
     @staticmethod
-    def stream(prompt: list[str]) -> None:
+    async def stream(prompt: list[str]) -> None:
         messages = [
             {
                 "role": "system",
@@ -986,7 +1000,7 @@ class LLMClient:
         while True:
             msg = json.loads(LLMClient.body(messages=messages))
 
-            response = requests.post(
+            response = await AsyncHttp.post(
                 os.environ["LLM_HOST"],
                 headers=headers,
                 data=json.dumps(msg),
@@ -997,7 +1011,7 @@ class LLMClient:
                 Log.stderr(
                     f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}, retrying{Color.RESET}"
                 )
-                response = requests.post(
+                response = await AsyncHttp.post(
                     os.environ["LLM_HOST"],
                     headers=headers,
                     data=json.dumps(msg),
@@ -1046,13 +1060,10 @@ class LLMClient:
                 )
 
             results = {}
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {
-                    executor.submit(Tools.execute_wrapper, tc): tc for tc in tool_calls
-                }
-                for future in as_completed(futures):
-                    tool_id, result = future.result()
-                    results[tool_id] = result
+            exec_tasks = [Tools.execute_wrapper(tc) for tc in tool_calls]
+            exec_results = await asyncio.gather(*exec_tasks)
+            for tool_id, result in exec_results:
+                results[tool_id] = result
 
             for tool_call in tool_calls:
                 tool_id = tool_call.get("id", "")
@@ -1067,13 +1078,13 @@ class LLMClient:
                 )
 
 
-def main() -> None:
+async def main() -> None:
     with suppress(KeyboardInterrupt):
         prompt = [*sys.argv[1:]]
         if not sys.stdin.isatty():
             prompt.extend(["\n\n", *sys.stdin.read().splitlines()])
-        LLMClient.stream(prompt)
+        await LLMClient.stream(prompt)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
