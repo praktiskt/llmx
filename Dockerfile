@@ -1,8 +1,7 @@
-FROM python:3.14-slim
-
+FROM astral/uv:python3.14-bookworm-slim
 WORKDIR /app
-COPY . /app
-
-RUN pip install fastapi httpx uvicorn[standard] mistune requests
-
-ENTRYPOINT ["python", "-m", "src.server"]
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev
+COPY . .
+CMD ["uv", "run", "python", "-m", "llmx.server"]
+ENTRYPOINT ["uv", "run", "python", "-m", "llmx.server"]
