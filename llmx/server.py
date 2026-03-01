@@ -207,16 +207,19 @@ body {
 #input-area button:hover { background: var(--sapphire); }
 #input-area button:disabled { background: var(--surface2); cursor: not-allowed; }
 #input-area button.loading { background: var(--peach); }
-#input-area button#trash {
+#input-area button#new {
     background: var(--red);
     color: var(--crust);
     padding: 0.625rem 1rem;
 }
-#input-area button .spinner { display: none; width: 18px; height: 18px; border: 2px solid var(--text); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
-#input-area button.loading .spinner { display: inline-block; }
-#input-area button.loading .spinner { border-color: var(--crust); border-top-color: transparent; }
+#input-area button .spinner { display: none; }
+#input-area button.loading .spinner { display: inline-block; animation: pulse 2s ease-in-out infinite; }
 #input-area button.loading .btn-text { display: none; }
-@keyframes spin { to { transform: rotate(360deg); } }
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+}
 .typing { display: inline-block; }
 .typing::after {
     content: '';
@@ -281,20 +284,29 @@ HTML_PAGE = f"""<!DOCTYPE html>
     <div id="chat"></div>
     <div id="input-area">
         <input type="text" id="msg" placeholder="Type your message..." autocomplete="off" autofocus>
-        <button id="send"><span class="btn-text">Send</span><span class="spinner"></span></button>
-        <button id="trash" title="Clear session">🗑️</button>
+        <button id="send"><span class="btn-text">send</span><span class="spinner">stop</span></button>
+        <button id="new" title="New session">new</button>
     </div>
     <div id="image-modal"></div>
     <script>
         const chat = document.getElementById('chat');
         const input = document.getElementById('msg');
         const sendBtn = document.getElementById('send');
-        const trashBtn = document.getElementById('trash');
+        const trashBtn = document.getElementById('new');
         const inputArea = document.getElementById('input-area');
         const imageModal = document.getElementById('image-modal');
+        let abortController = null;
         
         imageModal.addEventListener('click', () => imageModal.classList.remove('active'));
-        document.addEventListener('keydown', e => {{ if (e.key === 'Escape') imageModal.classList.remove('active'); }});
+        document.addEventListener('keydown', e => {{ 
+            if (e.key === 'Escape') {{
+                if (imageModal.classList.contains('active')) {{
+                    imageModal.classList.remove('active');
+                }} else if (abortController) {{
+                    abortController.abort();
+                }}
+            }}
+        }});
         
         function addMessage(content, type = 'assistant') {{
             const div = document.createElement('div');
@@ -328,8 +340,9 @@ HTML_PAGE = f"""<!DOCTYPE html>
             
             addMessage(msg, 'user');
             input.value = '';
-            sendBtn.disabled = true;
+            sendBtn.disabled = false;
             sendBtn.classList.add('loading');
+            abortController = new AbortController();
             
             setTyping();
             
@@ -337,7 +350,8 @@ HTML_PAGE = f"""<!DOCTYPE html>
                 const res = await fetch('/chat', {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{message: msg}})
+                    body: JSON.stringify({{message: msg}}),
+                    signal: abortController.signal
                 }});
                 
                 if (!res.ok) {{
@@ -381,11 +395,16 @@ HTML_PAGE = f"""<!DOCTYPE html>
                 }}
             }} catch (e) {{
                 clearTyping();
-                addMessage('Error: ' + e.message, 'system');
+                if (e.name === 'AbortError') {{
+                    addMessage('<span style="color: var(--peach)">Stopped</span>', 'system');
+                }} else {{
+                    addMessage('Error: ' + e.message, 'system');
+                }}
             }}
             
             sendBtn.disabled = false;
             sendBtn.classList.remove('loading');
+            abortController = null;
         }}
         
         function handleEvent(event) {{
@@ -401,9 +420,15 @@ HTML_PAGE = f"""<!DOCTYPE html>
             }}
         }}
         
-        sendBtn.addEventListener('click', send);
+        sendBtn.addEventListener('click', () => {{
+            if (sendBtn.classList.contains('loading') && abortController) {{
+                abortController.abort();
+                return;
+            }}
+            send();
+        }});
         trashBtn.addEventListener('click', () => {{
-            if (confirm('Are you sure?')) {{
+            if (confirm('Will create a new session and delete this, continue?')) {{
                 window.location.href = '/';
             }}
         }});
@@ -569,7 +594,7 @@ async def post_chat(request: Request):
         session.messages.append({"role": "user", "content": user_message})
 
         try:
-            async for event in stream_response(session):
+            async for event in stream_response(session, request):
                 yield event
         except Exception as e:
             yield f"data: {json.dumps({'type': 'message', 'content': f'Error: {str(e)}'})}\n\n"
@@ -610,7 +635,9 @@ async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str
     return tool_id, "Error: Max retries exceeded"
 
 
-async def stream_response(session: Session) -> AsyncGenerator[str, None]:
+async def stream_response(
+    session: Session, request: Request
+) -> AsyncGenerator[str, None]:
     headers = {
         "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
         "Content-Type": "application/json",
@@ -700,6 +727,9 @@ async def stream_response(session: Session) -> AsyncGenerator[str, None]:
             tool_id, result = await execute_with_retry(tool_call)
             yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, result)})}\n\n"
 
+            if await request.is_disconnected():
+                return
+
             session.messages.append(
                 {
                     "role": "tool",
@@ -707,6 +737,9 @@ async def stream_response(session: Session) -> AsyncGenerator[str, None]:
                     "content": result,
                 }
             )
+
+        if await request.is_disconnected():
+            return
 
 
 def main():
