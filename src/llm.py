@@ -91,8 +91,7 @@ class Config:
     def get_system_prompt() -> str:
         today = date.today().isoformat()
         return (
-            f"Today: {today}. "
-            "Briefly respond to the user, being crystal clear and helpful. Never lie. "
+            f"Today is: {today}. "
             "When making multiple independent tool calls, batch them in a single response for efficiency. "
             "IMPORTANT: Use fetch() to get content. If content is large, it returns a file_id (6 lowercase alphanumeric chars). "
             "When you need to read, grep, or summarize multiple files, use file_ids=[...] in a single call for efficiency. "
@@ -789,6 +788,13 @@ class Tools:
                     json=payload,
                     timeout=60,
                 )
+                if 400 <= response.status_code < 500:
+                    response = requests.post(
+                        os.environ["LLM_HOST"],
+                        headers=headers,
+                        json=payload,
+                        timeout=60,
+                    )
                 if response.status_code != 200:
                     return (file_id, directive, f"Error: {response.status_code}")
 
@@ -986,6 +992,17 @@ class LLMClient:
                 stream=False,
             )
 
+            if 400 <= response.status_code < 500:
+                Log.stderr(
+                    f"{response.status_code}: {response.content.decode()}, retrying..."
+                )
+                response = requests.post(
+                    os.environ["LLM_HOST"],
+                    headers=headers,
+                    data=json.dumps(msg),
+                    stream=False,
+                )
+
             if response.status_code != 200:
                 Log.stderr(f"{response.status_code}: {response.content.decode()}")
                 sys.exit(1)
@@ -1035,12 +1052,14 @@ class LLMClient:
                     results[tool_id] = result
 
             for tool_call in tool_calls:
-                tool_id = tool_call.get("id")
+                tool_id = tool_call.get("id", "")
+                if not tool_id:
+                    continue
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_id,
-                        "content": results[tool_id],
+                        "content": results.get(tool_id, ""),
                     }
                 )
 
