@@ -38,6 +38,7 @@ class Color:
     }
     DEFAULT = "\033[2m"
     THINKING = "\033[2;3m"
+    ERROR = "\033[2;31m"
 
     @staticmethod
     def tool(name: str, text: str) -> str:
@@ -993,7 +994,9 @@ class LLMClient:
             )
 
             if 400 <= response.status_code < 500:
-                Log.stderr(f"{response.status_code}: {response.content.decode()}, retrying...")
+                Log.stderr(
+                    f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}, retrying{Color.RESET}"
+                )
                 response = requests.post(
                     os.environ["LLM_HOST"],
                     headers=headers,
@@ -1002,7 +1005,9 @@ class LLMClient:
                 )
 
             if response.status_code != 200:
-                Log.stderr(f"{response.status_code}: {response.content.decode()}")
+                Log.stderr(
+                    f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}{Color.RESET}"
+                )
                 sys.exit(1)
 
             data = response.json()
