@@ -77,9 +77,9 @@ CATPPUCCIN_MOCHA = """
     --overlay2: #7f849c;
     --overlay1: #6c7086;
     --overlay0: #585b70;
-    --surface2: #45475a;
+    --surface0: #1e1e2e;
     --surface1: #313244;
-    --surface0: #313244;
+    --surface2: #45475a;
     --blue: #89b4fa;
     --lavender: #b4befe;
     --mauve: #cba6f7;
@@ -91,6 +91,8 @@ CATPPUCCIN_MOCHA = """
     --teal: #94e2d5;
     --sky: #89dceb;
     --sapphire: #74c7ec;
+    --font-mono: 'SF Mono', Monaco, monospace;
+    --radius: 0.5rem;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -116,7 +118,7 @@ body {
 .message {
     max-width: 100%;
     padding: 0.5rem 0.75rem;
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     white-space: pre-wrap;
     word-break: break-word;
     contain: content;
@@ -134,11 +136,11 @@ body {
 .message.assistant pre { margin: 0.25rem 0; padding: 0.375rem; }
 .message.assistant th, .message.assistant td { padding: 0.25rem 0.375rem; }
 .message.thinking { border-left: 3px solid var(--mauve); font-style: italic; }
-.message.thinking .thinking-header { display: block; color: var(--mauve); font-weight: 600; font-style: normal; font-family: 'SF Mono', Monaco, monospace; font-size: 0.875rem; margin-bottom: 0.25rem; }
+.message.thinking .thinking-header { display: block; color: var(--mauve); font-weight: 600; font-style: normal; font-family: var(--font-mono); font-size: 0.875rem; margin-bottom: 0.25rem; }
 .message.system { align-self: flex-start; background: var(--surface2); color: var(--subtext1); font-style: italic; }
 .message.tool-call, .message.tool-result {
     align-self: flex-start;
-    font-family: 'SF Mono', Monaco, monospace;
+    font-family: var(--font-mono);
 }
 .message.tool-call { background: var(--surface0); border-left: 3px solid var(--peach); font-size: 0.875rem; }
 .message.tool-result { background: var(--crust); border-left: 3px solid var(--teal); font-size: 0.8125rem; min-width: 200px; }
@@ -168,7 +170,7 @@ body {
     flex: 1;
     background: var(--surface1);
     border: 1px solid var(--surface2);
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     padding: 0.5rem 0.75rem;
     color: var(--text);
     font-size: 1rem;
@@ -181,7 +183,7 @@ body {
     background: var(--blue);
     color: var(--crust);
     border: none;
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     padding: 0.5rem 1rem;
     font-size: 1rem;
     font-weight: 600;
@@ -213,13 +215,13 @@ code {
     background: var(--surface2);
     padding: 0.125rem 0.375rem;
     border-radius: 0.25rem;
-    font-family: 'SF Mono', Monaco, monospace;
+    font-family: var(--font-mono);
     font-size: 0.875em;
 }
 pre {
     background: var(--crust);
     padding: 0.75rem;
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     overflow-x: auto;
     margin: 0.5rem 0;
     white-space: pre-wrap;
