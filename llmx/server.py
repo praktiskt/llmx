@@ -9,8 +9,11 @@ import os
 import re
 import secrets
 import sys
+import traceback
 from html.parser import HTMLParser
 from typing import AsyncGenerator
+
+logger = logging.getLogger(__name__)
 
 import httpx
 import mistune
@@ -18,8 +21,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.llm import Config, Tools
+from .llm import Config, Tools
 
 for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
     logging.getLogger(name).addFilter(
@@ -142,7 +144,7 @@ body {
     align-self: flex-start;
     font-family: var(--font-mono);
 }
-.message.tool-call { background: var(--surface0); border-left: 3px solid var(--peach); font-size: 0.875rem; }
+.message.tool-call { background: var(--surface1); border-left: 3px solid var(--peach); font-size: 0.875rem; }
 .message.tool-result { background: var(--crust); border-left: 3px solid var(--teal); font-size: 0.8125rem; min-width: 200px; }
 .tool-call .tool-name { color: var(--peach); font-weight: 600; }
 .tool-call .tool-args { color: var(--subtext1); margin-top: 0.25rem; }
@@ -516,7 +518,7 @@ def format_message(content: str) -> str:
         if has_backticks
         else _markdown
     )
-    content = md(content)
+    content = md(content)  # type: ignore[assignment]
 
     content = content.replace("<a href=", '<a target="_blank" href=')
     content = re.sub(r"(<table>)", r"<div style='overflow-x:auto'>\1", content)
@@ -567,6 +569,28 @@ async def post_chat(request: Request):
     )
 
 
+async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str, str]:
+    tool_id = tool_call.get("id", "")
+    func = tool_call.get("function", {})
+    tool_name = func.get("name", "unknown")
+
+    for attempt in range(max_retries):
+        try:
+            return Tools.execute_wrapper(tool_call)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"Tool '{tool_name}' failed (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {str(e)}"
+                )
+            else:
+                logger.error(
+                    f"Tool '{tool_name}' failed after {max_retries} attempts: {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+                )
+                return tool_id, f"Error: {str(e)}"
+
+    return tool_id, "Error: Max retries exceeded"
+
+
 async def stream_response(session: Session) -> AsyncGenerator[str, None]:
     headers = {
         "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
@@ -588,14 +612,28 @@ async def stream_response(session: Session) -> AsyncGenerator[str, None]:
             if Config.tools_enabled():
                 payload["tools"] = Tools.SCHEMA
 
-            response = await client.post(
-                os.environ["LLM_HOST"],
-                headers=headers,
-                json=payload,
-            )
+            response = None
+            for attempt in range(5):
+                response = await client.post(
+                    os.environ["LLM_HOST"],
+                    headers=headers,
+                    json=payload,
+                )
 
-            if response.status_code != 200:
+                if response.status_code == 200:
+                    break
+
+                if response.status_code == 429:
+                    logger.warning(
+                        f"API rate limited (attempt {attempt + 1}/5), retrying..."
+                    )
+                    continue
+
                 yield f"data: {json.dumps({'type': 'message', 'content': f'API Error {response.status_code}: {response.text[:200]}'})}\n\n"
+                return
+
+            if response is None or response.status_code != 200:
+                yield f"data: {json.dumps({'type': 'message', 'content': f'API Error: Max retries exceeded'})}\n\n"
                 return
 
             data = response.json()
@@ -630,10 +668,7 @@ async def stream_response(session: Session) -> AsyncGenerator[str, None]:
                 except json.JSONDecodeError:
                     args = {}
 
-                try:
-                    tool_id, result = Tools.execute_wrapper(tool_call)
-                except Exception as e:
-                    tool_id, result = "", f"Error: {str(e)}"
+                tool_id, result = await execute_with_retry(tool_call)
                 yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, result)})}\n\n"
 
                 session.messages.append(
