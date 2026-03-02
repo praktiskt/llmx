@@ -606,7 +606,7 @@ class Tools:
         async def fetch_and_process(fetch_url: str) -> str | None:
             response = await AsyncHttp.get(
                 fetch_url,
-                timeout=30,
+                timeout=10,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
             if response.status_code != 200:
@@ -659,7 +659,7 @@ class Tools:
 
         url = f"https://r.jina.ai/https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
         try:
-            response = await AsyncHttp.get(url, timeout=30)
+            response = await AsyncHttp.get(url, timeout=10)
             response.raise_for_status()
             html = response.text
             results = []
@@ -738,7 +738,7 @@ class Tools:
             url = f"{url_prefix}{query}"
             for attempt, delay in enumerate(delays):
                 try:
-                    response = await AsyncHttp.get(url, timeout=30, headers=headers)
+                    response = await AsyncHttp.get(url, timeout=10, headers=headers)
                     response.raise_for_status()
 
                     if endpoint_type == "jina":

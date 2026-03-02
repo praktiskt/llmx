@@ -7,9 +7,8 @@ import json
 import logging
 import os
 import re
-import secrets
-import uuid
 import traceback
+import uuid
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import AsyncGenerator
@@ -279,7 +278,10 @@ async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str
                 logger.error(
                     f"Tool '{tool_name}' failed after {max_retries} attempts: {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
                 )
-                return tool_id, f"Error: {str(e)}"
+                return (
+                    tool_id,
+                    f"Error: {tool_name} failed after {max_retries} attempts: {type(e).__name__}: {str(e)}",
+                )
 
     return tool_id, "Error: Max retries exceeded"
 
