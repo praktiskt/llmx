@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import secrets
+import uuid
 import traceback
 from html.parser import HTMLParser
 from pathlib import Path
@@ -117,7 +118,7 @@ sessions: dict[str, Session] = {}
 
 
 def generate_session_id() -> str:
-    return secrets.token_hex(8)
+    return str(uuid.uuid4())
 
 
 def get_session(session_id: str | None = None) -> tuple[Session, str]:
