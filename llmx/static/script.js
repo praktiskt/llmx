@@ -9,7 +9,7 @@ let sessionId = null;
 
 function getSessionIdFromUrl() {
     const path = window.location.pathname;
-    const match = path.match(/^\/([a-f0-9]+)$/);
+    const match = path.match(/^\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/);
     return match ? match[1] : null;
 }
 

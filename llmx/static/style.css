@@ -117,7 +117,7 @@ body {
 #input-area button {
     background: var(--blue);
     color: var(--crust);
-    border: none;
+    border: 2px solid var(--surface2);
     border-radius: var(--radius);
     padding: 0.5rem 1rem;
     font-size: 1rem;
@@ -127,7 +127,10 @@ body {
 }
 #input-area button:hover { background: var(--sapphire); }
 #input-area button:disabled { background: var(--surface2); cursor: not-allowed; }
-#input-area button.loading { background: var(--peach); }
+#input-area button.loading { 
+    background: var(--peach);
+    border-color: var(--surface2);
+}
 #input-area button#new {
     background: var(--red);
     color: var(--crust);
@@ -138,30 +141,26 @@ body {
 #input-area button.loading .btn-text { display: none; }
 
 .loading-line {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: var(--peach);
-    opacity: 0;
-    transition: opacity 0.2s;
-    z-index: 1;
+    display: none;
 }
 
-#input-area.loading .loading-line {
-    opacity: 1;
+@keyframes line-glow {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+}
+
+#input-area.loading {
     animation: glow 3s ease-in-out infinite;
 }
 
 @keyframes glow {
     0%, 100% { 
-        background: var(--peach);
-        box-shadow: 0 -3px 8px var(--peach);
+        background: rgba(250, 137, 123, 0.1);
+        box-shadow: 0 -2px 8px rgba(250, 137, 123, 0.3), 0 2px 8px rgba(250, 137, 123, 0.3);
     }
     50% { 
-        background: var(--peach);
-        box-shadow: 0 -5px 15px var(--peach), 0 -8px 25px var(--peach);
+        background: rgba(250, 137, 123, 0.2);
+        box-shadow: 0 -2px 12px rgba(250, 137, 123, 0.5), 0 -3px 20px rgba(250, 137, 123, 0.3), 0 2px 12px rgba(250, 137, 123, 0.5), 0 3px 20px rgba(250, 137, 123, 0.3);
     }
 }
 
