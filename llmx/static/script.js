@@ -5,6 +5,80 @@ const trashBtn = document.getElementById('new');
 const inputArea = document.getElementById('input-area');
 const imageModal = document.getElementById('image-modal');
 let abortController = null;
+let sessionId = null;
+
+function getSessionIdFromUrl() {
+    const path = window.location.pathname;
+    const match = path.match(/^\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/);
+    return match ? match[1] : null;
+}
+
+function formatMessageContent(content) {
+    return content;
+}
+
+async function loadHistory() {
+    sessionId = getSessionIdFromUrl();
+    if (!sessionId) return;
+    
+    try {
+        const res = await fetch(`/session/${sessionId}/messages`);
+        if (!res.ok) return;
+        
+        const data = await res.json();
+        const messages = data.messages || [];
+        
+        for (const msg of messages) {
+            if (msg.role === 'system') continue;
+            
+            if (msg.role === 'user') {
+                addMessage(msg.content, 'user');
+            } else if (msg.role === 'assistant') {
+                if (msg.reasoning) {
+                    addMessage(`<span class='thinking-header'>thinking</span>${escapeHtml(msg.reasoning)}`, 'thinking');
+                }
+                if (msg.content) {
+                    addMessage(msg.content, 'assistant');
+                }
+                if (msg.tool_calls) {
+                    for (const tc of msg.tool_calls) {
+                        const func = tc.function || {};
+                        const args = func.arguments ? JSON.parse(func.arguments) : {};
+                        const toolId = tc.id || '';
+                        const result = msg.tool_call_id ? '' : null;
+                        addMessage(formatToolCallHtml(func.name, args, result), 'tool-call');
+                    }
+                }
+            } else if (msg.role === 'tool') {
+                const prevToolCall = chat.querySelector('.message.tool-call:last-child');
+                if (prevToolCall) {
+                    const resultHtml = `<span class="result-toggle" onclick="this.classList.toggle('expanded'); const c = this.nextElementSibling; c.classList.toggle('collapsed'); this.textContent = this.classList.contains('expanded') ? '[▲ result]' : '[▼ result]'">[▼ result]</span><pre class="result-content collapsed"><code>${escapeHtml(msg.content)}</code></pre>`;
+                    prevToolCall.insertAdjacentHTML('beforeend', resultHtml);
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load history:', e);
+    }
+}
+
+function formatToolCallHtml(toolName, args, result) {
+    const argsStr = JSON.stringify(args, null, 2);
+    const escapedArgs = escapeHtml(argsStr);
+    let resultHtml = '';
+    if (result) {
+        const truncated = result.length > 500 ? result.slice(0, 500) + '...' : result;
+        const escapedResult = escapeHtml(truncated);
+        resultHtml = `<span class="result-toggle" onclick="this.classList.toggle('expanded'); const c = this.nextElementSibling; c.classList.toggle('collapsed'); this.textContent = this.classList.contains('expanded') ? '[▲ result]' : '[▼ result]'">[▼ result]</span><pre class="result-content collapsed"><code>${escapedResult}</code></pre>`;
+    }
+    return `<span class="tool-name">${escapeHtml(toolName)}</span>\n<div class="tool-args"><pre><code>${escapedArgs}</code></pre></div>${resultHtml}`;
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
 
 imageModal.addEventListener('click', () => imageModal.classList.remove('active'));
 document.addEventListener('keydown', e => { 
@@ -59,7 +133,8 @@ async function send() {
     setTyping();
     
     try {
-        const res = await fetch('/chat', {
+        const url = sessionId ? `/chat?session_id=${sessionId}` : '/chat';
+        const res = await fetch(url, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({message: msg}),
@@ -153,6 +228,9 @@ input.addEventListener('keydown', e => {
     }
 });
 
-window.addEventListener('load', () => input.focus());
+window.addEventListener('load', async () => {
+    await loadHistory();
+    input.focus();
+});
 inputArea.addEventListener('click', () => input.focus());
 input.addEventListener('touchstart', () => input.focus());
