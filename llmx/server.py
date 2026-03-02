@@ -21,7 +21,7 @@ import httpx
 import mistune
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .llm import Config, Tools
@@ -210,23 +210,33 @@ def format_message(content: str) -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def get_index(request: Request):
+async def get_index():
+    session, session_id = get_session(None)
+    return RedirectResponse(f"/{session_id}")
+
+
+@app.get("/{session_id}", response_class=HTMLResponse)
+async def get_session_page(session_id: str):
     html_path = STATIC_DIR / "index.html"
-    return HTMLResponse(
-        content=html_path.read_text(),
-        headers={"Set-Cookie": "session=; Path=/; Max-Age=0"},
-    )
+    return HTMLResponse(content=html_path.read_text())
+
+
+@app.get("/session/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    session, _ = get_session(session_id)
+    return {"messages": session.messages}
 
 
 @app.post("/chat")
-async def post_chat(request: Request):
+async def post_chat(request: Request, session_id: str | None = None):
     try:
         data = await request.json()
         user_message = data.get("message", "")
     except Exception:
         return {"error": "Invalid JSON"}
 
-    session_id = get_session_id_from_cookie(request)
+    if not session_id:
+        session_id = get_session_id_from_cookie(request)
     session, new_session_id = get_session(session_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -247,7 +257,6 @@ async def post_chat(request: Request):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "Set-Cookie": f"session={new_session_id}; Path=/",
         },
     )
 
@@ -350,10 +359,12 @@ async def stream_response(
             content = message.get("content", "")
             if content:
                 yield f"data: {json.dumps({'type': 'message', 'content': format_message(content)})}\n\n"
-                session.messages.append({"role": "assistant", "content": content})
+                session.messages.append(
+                    {"role": "assistant", "content": content, "reasoning": reasoning}
+                )
             return
 
-        session.messages.append(message)
+        session.messages.append({**message, "reasoning": reasoning})
 
         for tool_call in tool_calls:
             func = tool_call.get("function", {})
