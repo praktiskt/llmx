@@ -27,6 +27,67 @@ class AsyncHttp:
     async def post(url: str, **kwargs) -> requests.Response:
         return await asyncio.to_thread(requests.post, url, **kwargs)
 
+    @staticmethod
+    async def head(url: str) -> requests.Response:
+        return await asyncio.to_thread(
+            requests.head, url, timeout=5, headers={"User-Agent": "Mozilla/5.0"}
+        )
+
+    @staticmethod
+    async def get_markdown(url: str, original_url: str | None = None) -> str | None:
+        original_url = original_url or url
+        try:
+            response = await AsyncHttp.get(
+                url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+            )
+            if response.status_code != 200:
+                return None
+
+            content_type = response.headers.get("Content-Type", "").lower()
+            if url.startswith("https://r.jina.ai/"):
+                return response.text
+            if "text/html" in content_type or original_url.lower().endswith(
+                (".html", ".htm")
+            ):
+                parser = HTMLToMarkdown()
+                parser.feed(response.text)
+                return parser.get_markdown()
+            return response.text
+        except Exception:
+            return None
+
+    @staticmethod
+    async def post_markdown(url: str, body: dict) -> str | None:
+        try:
+            response = await AsyncHttp.post(
+                url,
+                json=body,
+                timeout=10,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Content-Type": "application/json",
+                },
+            )
+            if response.status_code != 200:
+                return None
+            return response.json().get("markdown")
+        except Exception:
+            return None
+
+
+async def first_success(*coroutines):
+    tasks = [asyncio.create_task(coro) for coro in coroutines]
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+    for task in done:
+        result = task.result()
+        if result is not None:
+            for t in pending:
+                t.cancel()
+            return result
+
+    return None
+
 
 class Log:
     @staticmethod
@@ -674,52 +735,52 @@ class Tools:
 
     @staticmethod
     async def _fetch_single(url: str) -> str:
-        original_url = url
         resolved_url = UrlRedirect.resolve(url)
         if resolved_url:
             url = resolved_url
-
-        async def fetch_and_process(fetch_url: str) -> str | None:
-            response = await AsyncHttp.get(
-                fetch_url,
-                timeout=10,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            if response.status_code != 200:
-                return f"HTTP {response.status_code}"
-
-            content_type = response.headers.get("Content-Type", "").lower()
-            if isinstance(fetch_url, str) and fetch_url.startswith(
-                "https://r.jina.ai/"
-            ):
-                return response.text
-            elif "text/html" in content_type or original_url.endswith(
-                (".html", ".htm")
-            ):
-                parser = HTMLToMarkdown()
-                parser.feed(response.text)
-                return parser.get_markdown()
-            return response.text
 
         def store_and_return(content: str) -> str:
             file_id = Config.generate_file_id()
             Cache.store(file_id, content)
             return f'Stored as {file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (file_id="{file_id}")'
 
-        url_lower = url.lower()
-        if any(url_lower.endswith(ext) for ext in Config.BINARY_EXTENSIONS):
-            result = await fetch_and_process(f"https://r.jina.ai/{url}")
+        web2md_body = {
+            "url": url,
+            "options": {
+                "includeTitle": True,
+                "includeLinks": True,
+                "improveReadability": True,
+            },
+        }
+
+        is_binary = False
+        try:
+            response = await AsyncHttp.head(url)
+            if response.status_code == 200:
+                content_type = response.headers.get("Content-Type", "").lower()
+                if any(
+                    ct in content_type
+                    for ct in ["application/pdf", "image/", "application/octet-stream"]
+                ):
+                    is_binary = True
+        except Exception:
+            pass
+
+        if is_binary:
+            result = await first_success(
+                AsyncHttp.get_markdown(f"https://r.jina.ai/{url}"),
+                AsyncHttp.post_markdown("https://web2md.site/api/convert", web2md_body),
+            )
         else:
-            result = await fetch_and_process(url)
-            if result and not result.startswith("HTTP "):
-                return store_and_return(result)
-            result = await fetch_and_process(f"https://r.jina.ai/{url}")
+            result = await first_success(
+                AsyncHttp.get_markdown(url),
+                AsyncHttp.get_markdown(f"https://r.jina.ai/{url}"),
+                AsyncHttp.post_markdown("https://web2md.site/api/convert", web2md_body),
+            )
 
-        if result and not result.startswith("HTTP "):
+        if result:
             return store_and_return(result)
-
-        status = result if result else "unknown"
-        return f"fetch failed ({status})"
+        return "fetch failed (no content)"
 
     @staticmethod
     async def fetch(urls: list[str]) -> str:
