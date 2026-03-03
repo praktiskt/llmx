@@ -809,6 +809,12 @@ class Tools:
     ) -> str:
         async def summarize_task(task: tuple) -> tuple:
             file_id, directive, content = task
+            if len(content) > 100_000:
+                return (
+                    file_id,
+                    directive,
+                    f"Error: Content too large ({len(content)} chars, max 100k). Use read_file with offset/limit to select a smaller section first.",
+                )
             tokens_for_summary = max(250, max_length * 2)
             messages = [
                 {
@@ -971,9 +977,18 @@ class Tools:
                     f"[Truncated from limit={current_limit} to limit={suggested_limit}]\n{result}",
                 )
 
+        num_files = len(file_ids)
+        num_directives = len(args.get("directives", []))
+        total_summaries = num_files * max(1, num_directives)
+        suggested_max_length = max(500, Config.MAX_TOOL_RESULT_CHARS // total_summaries)
+
         return (
             tool_id,
-            f"Result too large ({len(result)} chars). Use summarize(file_ids={file_ids}, directives=[...]) to extract what you need.",
+            f"Result too large ({len(result)} chars, max {Config.MAX_TOOL_RESULT_CHARS}). "
+            f"Suggestions:\n"
+            f"1. Reduce max_length (currently {args.get('max_length', 1000)}, try {suggested_max_length})\n"
+            f"2. Summarize fewer files at a time (currently {num_files})\n"
+            f"3. Summarize with different directives in separate calls",
         )
 
 
