@@ -26,6 +26,20 @@ from fastapi.staticfiles import StaticFiles
 
 from .llm import Config, Tools, UrlRedirect
 
+
+def resolve_redirects(text: str) -> str:
+    def replace_redirect(match):
+        url = match.group(0)
+        resolved = UrlRedirect.resolve(url)
+        return resolved if resolved else url
+
+    return re.sub(
+        r"https://redirect/[a-f0-9]{8}(\.png|\.jpg|\.jpeg|\.gif)?",
+        replace_redirect,
+        text,
+    )
+
+
 for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
     logging.getLogger(name).addFilter(
         lambda r: not (r.exc_info and isinstance(r.exc_info[1], asyncio.CancelledError))
@@ -137,6 +151,7 @@ def format_tool_call(tool_name: str, args: dict, result: str | None = None) -> s
     escaped_args = html.escape(args_str)
 
     if result:
+        result = resolve_redirects(result)
         truncated = result[:500] + ("..." if len(result) > 500 else "")
         escaped_result = html.escape(truncated)
         result_html = f"""<span class="result-toggle" onclick="this.classList.toggle('expanded'); const c = this.nextElementSibling; c.classList.toggle('collapsed'); this.textContent = this.classList.contains('expanded') ? '[▲ result]' : '[▼ result]'">[▼ result]</span><pre class="result-content collapsed"><code>{escaped_result}</code></pre>"""
@@ -182,6 +197,7 @@ def get_session_id_from_cookie(request: Request) -> str | None:
 def format_message(content: str) -> str:
     content = content.rstrip()
     content = re.sub(r"•\s*", "- ", content)
+    content = resolve_redirects(content)
 
     has_backticks = "```" in content
     md = mistune.create_markdown(

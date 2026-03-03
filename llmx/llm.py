@@ -314,6 +314,7 @@ class Cache:
         wrapped_lines = []
         for line in content.splitlines():
             line = re.sub(r"(data:[^,]+,)[^)\s]+", r"\1[TRUNCATED]", line)
+            line = UrlRedirect.replace_in_text(line)
 
             if len(line) <= 200:
                 wrapped_lines.append(line)
@@ -485,18 +486,43 @@ class UrlRedirect:
         return hashlib.md5(url.encode()).hexdigest()[:8]
 
     @staticmethod
-    def store(url: str) -> str:
+    def store(url: str, extension: str | None = None) -> str:
         redirect_id = UrlRedirect._hash_url(url)
         UrlRedirect._redirects[redirect_id] = url
+        if extension:
+            return f"https://redirect/{redirect_id}.{extension}"
         return f"https://redirect/{redirect_id}"
 
     @staticmethod
     def resolve(redirect_url: str) -> str | None:
-        match = re.match(r"^https://redirect/([a-f0-9]{8})$", redirect_url)
+        match = re.match(
+            r"^https://redirect/([a-f0-9]{8})(\.png|\.jpg|\.jpeg|\.gif)?$", redirect_url
+        )
         if not match:
             return None
         redir_id = match.group(1)
         return UrlRedirect._redirects.get(redir_id)
+
+    @staticmethod
+    def replace_in_text(text: str) -> str:
+        def replace_url(match):
+            url = match.group(0)
+
+            if re.match(
+                r"^https://redirect/[a-f0-9]{8}(\.png|\.jpg|\.jpeg|\.gif)?$", url
+            ):
+                return url
+
+            ext = None
+            if url.lower().endswith(".png"):
+                ext = "png"
+            elif url.lower().endswith(".jpg") or url.lower().endswith(".jpeg"):
+                ext = "jpg"
+            elif url.lower().endswith(".gif"):
+                ext = "gif"
+            return UrlRedirect.store(url, ext)
+
+        return re.sub(r"https?://[^\s\)\]\"\'<>]+", replace_url, text)
 
     @staticmethod
     def clear() -> None:
