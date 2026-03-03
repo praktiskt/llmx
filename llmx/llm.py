@@ -1,10 +1,13 @@
 #!/usr/bin/python3
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import json
+import math
 import mimetypes
+import operator
 import os
 import random
 import re
@@ -115,6 +118,7 @@ class Color:
         "read_file": "\033[2;34m",
         "summarize": "\033[2;33m",
         "grep_file": "\033[2;35m",
+        "math": "\033[2;36m",
     }
     DEFAULT = "\033[2m"
     THINKING = "\033[2;3m"
@@ -739,6 +743,23 @@ class Tools:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "math",
+                "description": "Evaluate a mathematical expression. Supports arithmetic operators (+, -, *, /, //, %, **), parentheses, and whitelisted functions/constants.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "expression": {
+                            "type": "string",
+                            "description": "Mathematical expression to evaluate, e.g., 'sqrt(16) + abs(-5) * (pi/2)'.",
+                        }
+                    },
+                    "required": ["expression"],
+                },
+            },
+        },
     ]
 
     @staticmethod
@@ -1025,6 +1046,74 @@ class Tools:
 
         return "\n\n---\n\n".join(final_results)
 
+    _MATH_FUNCTIONS = {
+        "sqrt": math.sqrt,
+        "sin": math.sin,
+        "cos": math.cos,
+        "tan": math.tan,
+        "log": math.log,
+        "log10": math.log10,
+        "log2": math.log2,
+        "exp": math.exp,
+        "floor": math.floor,
+        "ceil": math.ceil,
+        "degrees": math.degrees,
+        "radians": math.radians,
+        "factorial": math.factorial,
+        "gcd": math.gcd,
+        "abs": abs,
+        "min": min,
+        "max": max,
+        "round": round,
+    }
+
+    _MATH_CONSTANTS = {"pi": math.pi, "e": math.e}
+
+    @staticmethod
+    def _eval_ast(node):
+        """Recursively evaluate an AST node safely."""
+        if isinstance(node, ast.Constant):
+            return node.value
+
+        if isinstance(node, ast.BinOp):
+            ops = {
+                ast.Add: operator.add,
+                ast.Sub: operator.sub,
+                ast.Mult: operator.mul,
+                ast.Div: operator.truediv,
+                ast.FloorDiv: operator.floordiv,
+                ast.Mod: operator.mod,
+                ast.Pow: operator.pow,
+            }
+            return ops[type(node.op)](
+                Tools._eval_ast(node.left), Tools._eval_ast(node.right)
+            )
+        if isinstance(node, ast.UnaryOp):
+            if isinstance(node.op, ast.UAdd):
+                return +Tools._eval_ast(node.operand)
+            if isinstance(node.op, ast.USub):
+                return -Tools._eval_ast(node.operand)
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                if func_name in Tools._MATH_FUNCTIONS:
+                    args = [Tools._eval_ast(arg) for arg in node.args]
+                    return Tools._MATH_FUNCTIONS[func_name](*args)
+        if isinstance(node, ast.Name):
+            if node.id in Tools._MATH_CONSTANTS:
+                return Tools._MATH_CONSTANTS[node.id]
+        raise ValueError(f"Unsupported expression: {ast.dump(node)}")
+
+    @staticmethod
+    async def math(expression: str) -> str:
+        """Evaluate a mathematical expression safely and return the result as string."""
+        try:
+            tree = ast.parse(expression, mode="eval")
+            result = Tools._eval_ast(tree.body)
+            return str(result)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
     @staticmethod
     async def execute(tool_name: str, tool_args: dict) -> str:
         if tool_name == "fetch":
@@ -1066,6 +1155,8 @@ class Tools:
                 tool_args.get("ignore_case", False),
                 tool_args.get("context", 0),
             )
+        if tool_name == "math":
+            return await Tools.math(tool_args.get("expression", ""))
         return f"Unknown tool: {tool_name}"
 
     @staticmethod
