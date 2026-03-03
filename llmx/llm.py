@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import mimetypes
 import os
 import random
 import re
@@ -73,6 +74,13 @@ class AsyncHttp:
             return response.json().get("markdown")
         except Exception:
             return None
+
+
+def is_binary_url(url: str, content_type: str | None = None) -> bool:
+    mime = content_type or mimetypes.guess_type(url)[0]
+    if mime is None:
+        return False
+    return not mime.startswith("text/")
 
 
 async def first_success(*coroutines):
@@ -757,14 +765,11 @@ class Tools:
         try:
             response = await AsyncHttp.head(url)
             if response.status_code == 200:
-                content_type = response.headers.get("Content-Type", "").lower()
-                if any(
-                    ct in content_type
-                    for ct in ["application/pdf", "image/", "application/octet-stream"]
-                ):
-                    is_binary = True
+                is_binary = is_binary_url(url, response.headers.get("Content-Type"))
+            else:
+                is_binary = is_binary_url(url)
         except Exception:
-            pass
+            is_binary = is_binary_url(url)
 
         if is_binary:
             result = await first_success(
