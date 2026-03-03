@@ -313,6 +313,8 @@ class Cache:
     def store(file_id: str, content: str) -> None:
         wrapped_lines = []
         for line in content.splitlines():
+            line = re.sub(r"(data:[^,]+,)[^)\s]+", r"\1[TRUNCATED]", line)
+
             if len(line) <= 200:
                 wrapped_lines.append(line)
             else:
@@ -324,7 +326,7 @@ class Cache:
                         wrapped_lines.append(chunk[:last_space])
                         start += last_space + 1
                     else:
-                        wrapped_lines.append(line[start:])
+                        wrapped_lines.append(line[start : start + 200])
                         break
         Cache._storage[file_id] = "\n".join(wrapped_lines)
 
