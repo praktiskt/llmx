@@ -1222,6 +1222,11 @@ class LLMClient:
                 except json.JSONDecodeError:
                     args = {}
                 tool_name = func.get("name", "unknown")
+                if tool_name == "fetch" and "urls" in args:
+                    args = {
+                        **args,
+                        "urls": [UrlRedirect.resolve(u) or u for u in args["urls"]],
+                    }
                 Log.stderr(
                     Color.tool(
                         tool_name,
