@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -460,6 +461,32 @@ class Cache:
         return "\n\n---\n\n".join(results)
 
 
+class UrlRedirect:
+    _redirects: dict[str, str] = {}
+
+    @staticmethod
+    def _hash_url(url: str) -> str:
+        return hashlib.md5(url.encode()).hexdigest()[:8]
+
+    @staticmethod
+    def store(url: str) -> str:
+        redirect_id = UrlRedirect._hash_url(url)
+        UrlRedirect._redirects[redirect_id] = url
+        return f"https://redirect/{redirect_id}"
+
+    @staticmethod
+    def resolve(redirect_url: str) -> str | None:
+        match = re.match(r"^https://redirect/([a-f0-9]{8})$", redirect_url)
+        if not match:
+            return None
+        redir_id = match.group(1)
+        return UrlRedirect._redirects.get(redir_id)
+
+    @staticmethod
+    def clear() -> None:
+        UrlRedirect._redirects = {}
+
+
 class Tools:
     SCHEMA = [
         {
@@ -602,6 +629,9 @@ class Tools:
     @staticmethod
     async def _fetch_single(url: str) -> str:
         original_url = url
+        resolved_url = UrlRedirect.resolve(url)
+        if resolved_url:
+            url = resolved_url
 
         async def fetch_and_process(fetch_url: str) -> str | None:
             response = await AsyncHttp.get(
@@ -690,7 +720,8 @@ class Tools:
                 title_end = search_start + link_match.start()
                 title = html[title_start:title_end].strip()
 
-                results.append(f"{len(results) + 1}. [{title}]({target_url})")
+                redirect_url = UrlRedirect.store(target_url)
+                results.append(f"{len(results) + 1}. [{title}]({redirect_url})")
                 if len(results) >= max_results:
                     break
 
@@ -742,7 +773,12 @@ class Tools:
                     response.raise_for_status()
 
                     if endpoint_type == "jina":
-                        return response.text.strip()
+                        text = response.text.strip()
+                        urls = re.findall(r"https?://[^\s\)\]\"']+", text)
+                        for url in urls:
+                            redirect_url = UrlRedirect.store(url)
+                            text = text.replace(url, redirect_url)
+                        return text
 
                     parser = DuckDuckGoLiteSearch()
                     parser.feed(response.text)
@@ -750,7 +786,8 @@ class Tools:
                     if results:
                         lines = []
                         for i, r in enumerate(results, 1):
-                            lines.append(f"{i}. [{r['title']}]({r['url']})")
+                            redirect_url = UrlRedirect.store(r["url"])
+                            lines.append(f"{i}. [{r['title']}]({redirect_url})")
                             if r["snippet"]:
                                 lines.append(f"   {r['snippet']}")
                             lines.append("")
@@ -1072,6 +1109,7 @@ class LLMClient:
 
 async def main() -> None:
     with suppress(KeyboardInterrupt):
+        UrlRedirect.clear()
         prompt = [*sys.argv[1:]]
         if not sys.stdin.isatty():
             prompt.extend(["\n\n", *sys.stdin.read().splitlines()])

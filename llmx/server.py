@@ -24,7 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .llm import Config, Tools
+from .llm import Config, Tools, UrlRedirect
 
 for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
     logging.getLogger(name).addFilter(
@@ -131,6 +131,8 @@ def get_session(session_id: str | None = None) -> tuple[Session, str]:
 
 
 def format_tool_call(tool_name: str, args: dict, result: str | None = None) -> str:
+    if tool_name == "fetch" and "urls" in args:
+        args = {**args, "urls": [UrlRedirect.resolve(u) or u for u in args["urls"]]}
     args_str = json.dumps(args, indent=2)
     escaped_args = html.escape(args_str)
 
