@@ -311,8 +311,22 @@ class Cache:
 
     @staticmethod
     def store(file_id: str, content: str) -> None:
-        lines = [line[:200].rsplit(" ", 1)[0] for line in content.splitlines()]
-        Cache._storage[file_id] = "\n".join(lines)
+        wrapped_lines = []
+        for line in content.splitlines():
+            if len(line) <= 200:
+                wrapped_lines.append(line)
+            else:
+                start = 0
+                while start < len(line):
+                    chunk = line[start : start + 200]
+                    last_space = chunk.rfind(" ")
+                    if last_space > 0:
+                        wrapped_lines.append(chunk[:last_space])
+                        start += last_space + 1
+                    else:
+                        wrapped_lines.append(line[start:])
+                        break
+        Cache._storage[file_id] = "\n".join(wrapped_lines)
 
     @staticmethod
     def get(file_id: str) -> str | None:
@@ -515,17 +529,21 @@ class Tools:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Search query"},
+                        "queries": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of search queries (at least one)",
+                        },
                         "max_results": {
                             "type": "integer",
-                            "description": "Max results (default 5)",
+                            "description": "Max results per query (default 5)",
                         },
                         "images_only": {
                             "type": "boolean",
                             "description": "Search for images only (default false)",
                         },
                     },
-                    "required": ["query"],
+                    "required": ["queries"],
                 },
             },
         },
@@ -732,12 +750,7 @@ class Tools:
             return "Image search failed."
 
     @staticmethod
-    async def search(
-        query: str, max_results: int = 5, images_only: bool = False
-    ) -> str:
-        if images_only:
-            return await Tools._search_images(query, max_results)
-
+    async def _run_search(query: str, max_results: int = 5) -> str:
         headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -798,6 +811,25 @@ class Tools:
                         continue
 
         return "Search failed after retries."
+
+    @staticmethod
+    async def search(
+        queries: list[str], max_results: int = 5, images_only: bool = False
+    ) -> str:
+        file_ids = []
+        for query in queries:
+            if images_only:
+                result = await Tools._search_images(query, max_results)
+            else:
+                result = await Tools._run_search(query, max_results)
+            file_id = Config.generate_file_id()
+            Cache.store(file_id, result)
+            file_ids.append((query, file_id))
+
+        lines = [f"Query '{q}' stored in file_id={fid}" for q, fid in file_ids]
+        lines.append("")
+        lines.append("Use read_file, grep_file or summarize to get the content.")
+        return "\n".join(lines)
 
     @staticmethod
     async def summarize(
@@ -905,7 +937,7 @@ class Tools:
             return await Tools.fetch(tool_args.get("urls", []))
         if tool_name == "search":
             return await Tools.search(
-                tool_args.get("query", ""),
+                tool_args.get("queries", []),
                 tool_args.get("max_results", 5),
                 tool_args.get("images_only", False),
             )
