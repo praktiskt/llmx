@@ -939,7 +939,7 @@ class Tools:
                 return (
                     file_id,
                     directive,
-                    f"Error: Content too large ({len(content)} chars, max 100k). Use read_file with offset/limit to select a smaller section first.",
+                    f"Error: Content too large ({len(content)} chars, max 100k). Use summarize with offset/limit to select a smaller section.",
                 )
             tokens_for_summary = max(250, max_length * 2)
             messages = [
