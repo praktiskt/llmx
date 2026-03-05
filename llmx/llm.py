@@ -10,6 +10,7 @@ import random
 import re
 import string
 import sys
+import time
 from contextlib import suppress
 from datetime import date
 from html.parser import HTMLParser
@@ -19,40 +20,12 @@ import requests
 
 
 class AsyncHttp:
-    DEFAULT_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-        "Accept-Language": "sv-SE,sv;q=0.9",
-        "DNT": "1",
-    }
-
     @staticmethod
     async def get(url: str, **kwargs) -> requests.Response:
-        kwargs.setdefault("headers", AsyncHttp.DEFAULT_HEADERS)
-
-        if await Mullvad.check_status():
-            for proxy in await Mullvad.get_proxies(10):
-                try:
-                    kwargs["proxies"] = {"http": proxy, "https": proxy}
-                    return await asyncio.to_thread(requests.get, url, **kwargs)
-                except Exception:
-                    continue
-
         return await asyncio.to_thread(requests.get, url, **kwargs)
 
     @staticmethod
     async def post(url: str, **kwargs) -> requests.Response:
-        kwargs.setdefault(
-            "headers", {**AsyncHttp.DEFAULT_HEADERS, **kwargs.get("headers", {})}
-        )
-
-        if await Mullvad.check_status():
-            for proxy in await Mullvad.get_proxies(10):
-                try:
-                    kwargs["proxies"] = {"http": proxy, "https": proxy}
-                    return await asyncio.to_thread(requests.post, url, **kwargs)
-                except Exception:
-                    continue
-
         return await asyncio.to_thread(requests.post, url, **kwargs)
 
     @staticmethod
@@ -122,127 +95,6 @@ async def first_success(*coroutines):
             return result
 
     return None
-
-
-async def fetch_url(url: str, timeout: int = 10) -> str:
-    response = await AsyncHttp.get(url, timeout=timeout)
-    response.raise_for_status()
-    return response.text
-
-
-async def fetch_url_jina(url: str, timeout: int = 10) -> str:
-    response = await AsyncHttp.get(f"https://r.jina.ai/{url}", timeout=timeout)
-    response.raise_for_status()
-    return response.text
-
-
-async def fetch_url_web2md(url: str, timeout: int = 10) -> str | None:
-    web2md_body = {
-        "url": url,
-        "options": {
-            "includeTitle": True,
-            "includeLinks": True,
-            "improveReadability": True,
-        },
-    }
-    result = await AsyncHttp.post_markdown(
-        "https://web2md.site/api/convert", web2md_body
-    )
-    if result and _is_protection_page(result):
-        return None
-    return result
-
-
-async def fetch_url_jina_markdown(url: str) -> str | None:
-    return await AsyncHttp.get_markdown(f"https://r.jina.ai/{url}")
-
-
-async def fetch_url_direct_markdown(url: str) -> str | None:
-    return await AsyncHttp.get_markdown(url)
-
-
-def _replace_urls_with_redirects(text: str) -> str:
-    urls = re.findall(r"https?://[^\s\)\]\"']+", text)
-    for url in urls:
-        redirect_url = UrlRedirect.store(url)
-        text = text.replace(url, redirect_url)
-    return text
-
-
-def _is_protection_page(text: str) -> bool:
-    protection_patterns = [
-        "Protection. Privacy",
-        "Unexpected error",
-        "email us",
-        "error@duckduckgo.com",
-    ]
-    return any(pattern.lower() in text.lower() for pattern in protection_patterns)
-
-
-async def fetch_with_redirects(url: str) -> str | None:
-    try:
-        response = await AsyncHttp.get(url, timeout=10)
-        response.raise_for_status()
-    except Exception:
-        return None
-    text = response.text.strip()
-    if _is_protection_page(text):
-        return None
-    return _replace_urls_with_redirects(text)
-
-
-async def search_with_fallbacks(
-    query: str,
-    parser=None,
-    max_results: int = 5,
-) -> str | None:
-    ddg_lite_url = f"https://lite.duckduckgo.com/lite/?q={query}"
-    # ddg_html_url = f"https://html.duckduckgo.com/html/?q={query}"
-    ddg_main_url = f"https://duckduckgo.com/?q={query}"
-
-    async def fetch_lite():
-        try:
-            response = await AsyncHttp.get(ddg_lite_url, timeout=10)
-            response.raise_for_status()
-        except Exception:
-            return None
-        if parser:
-            parser.feed(response.text)
-            results = parser.get_results(max_results)
-            if not results:
-                return None
-            lines = []
-            for i, r in enumerate(results, 1):
-                redirect_url = UrlRedirect.store(r["url"])
-                lines.append(f"{i}. [{r['title']}]({redirect_url})")
-                if r["snippet"]:
-                    lines.append(f"   {r['snippet']}")
-                lines.append("")
-            return "\n".join(lines).strip()
-        return _replace_urls_with_redirects(response.text.strip())
-
-    # async def fetch_html():
-    #     return await fetch_with_redirects(ddg_html_url)
-
-    async def fetch_jina_lite():
-        return await fetch_with_redirects(f"https://r.jina.ai/{ddg_lite_url}")
-
-    async def fetch_jina_main():
-        return await fetch_with_redirects(f"https://r.jina.ai/{ddg_main_url}")
-
-    async def fetch_web2md():
-        try:
-            return await fetch_url_web2md(ddg_main_url)
-        except Exception:
-            return None
-
-    return await first_success(
-        fetch_lite(),
-        # fetch_html(),
-        fetch_jina_lite(),
-        fetch_jina_main(),
-        fetch_web2md(),
-    )
 
 
 class Log:
@@ -695,53 +547,6 @@ class Cache:
         return "\n\n---\n\n".join(results)
 
 
-class Mullvad:
-    PROXY_LIST_URL = "https://raw.githubusercontent.com/maximko/mullvad-socks-list/list/mullvad-socks-list.txt"
-
-    _is_mullvad: bool | None = None
-    _proxy_list: list[str] | None = None
-
-    @classmethod
-    async def check_status(cls) -> bool:
-        if cls._is_mullvad is not None:
-            return cls._is_mullvad
-
-        try:
-            response = requests.get("https://am.i.mullvad.net/json", timeout=10)
-            data = response.json()
-            cls._is_mullvad = data.get("mullvad_exit_ip", False)
-        except Exception:
-            cls._is_mullvad = False
-
-        return cls._is_mullvad or False
-
-    @classmethod
-    async def get_proxy_list(cls) -> list[str]:
-        if cls._proxy_list is not None:
-            return cls._proxy_list
-
-        try:
-            response = requests.get(cls.PROXY_LIST_URL, timeout=10)
-            lines = response.text.splitlines()
-            ip_pattern = re.compile(r"\b10\.124\.\d{1,3}\.\d{1,3}\b")
-            proxies = []
-            for line in lines:
-                match = ip_pattern.search(line)
-                if match:
-                    proxies.append(match.group(0))
-
-            cls._proxy_list = proxies
-        except Exception:
-            cls._proxy_list = []
-
-        return cls._proxy_list
-
-    @classmethod
-    async def get_proxies(cls, n: int) -> list[str]:
-        proxies = await cls.get_proxy_list()
-        return [f"socks5://{p}" for p in random.sample(proxies, min(n, len(proxies)))]
-
-
 class UrlRedirect:
     _redirects: dict[str, str] = {}
 
@@ -968,14 +773,14 @@ class Tools:
 
         if is_binary:
             result = await first_success(
-                fetch_url_jina_markdown(url),
-                fetch_url_web2md(url),
+                AsyncHttp.get_markdown(f"https://r.jina.ai/{url}"),
+                AsyncHttp.post_markdown("https://web2md.site/api/convert", web2md_body),
             )
         else:
             result = await first_success(
-                fetch_url_direct_markdown(url),
-                fetch_url_jina_markdown(url),
-                fetch_url_web2md(url),
+                AsyncHttp.get_markdown(url),
+                AsyncHttp.get_markdown(f"https://r.jina.ai/{url}"),
+                AsyncHttp.post_markdown("https://web2md.site/api/convert", web2md_body),
             )
 
         if result:
@@ -994,44 +799,18 @@ class Tools:
     async def _search_images(query: str, max_results: int = 5) -> str:
         from urllib.parse import quote
 
-        ddg_lite_url = (
-            f"https://lite.duckduckgo.com/lite/?q={quote(query)}&ia=images&iax=images"
-        )
-        ddg_html_url = (
-            f"https://html.duckduckgo.com/html/?q={quote(query)}&ia=images&iax=images"
-        )
-        ddg_main_url = f"https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
-
-        fetchers = [
-            lambda: fetch_with_redirects(f"https://r.jina.ai/{ddg_main_url}"),
-            lambda: fetch_with_redirects(f"https://r.jina.ai/{ddg_lite_url}"),
-            lambda: fetch_with_redirects(ddg_lite_url),
-            lambda: fetch_with_redirects(ddg_html_url),
-            lambda: fetch_url_web2md(ddg_main_url),
-        ]
-
-        html = None
-        for fetcher in fetchers:
-            try:
-                result = await fetcher()
-                if result and re.search(r"!\[Image", result):
-                    html = result
-                    break
-            except Exception:
-                continue
-
-        if not html:
-            return "Image search failed."
-
+        url = f"https://r.jina.ai/https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
         try:
+            response = await AsyncHttp.get(url, timeout=10)
+            response.raise_for_status()
+            html = response.text
             results = []
             seen_urls = set()
 
-            # Pattern: ![Image N: Title](url) or ![Image N](url)
-            img_pattern = re.compile(r"!\[Image[^\]]*\]")
+            img_pattern = re.compile(r"!\[Image \d+:")
             for img_match in img_pattern.finditer(html):
                 search_start = img_match.end()
-                link_match = re.search(r"\((https?://[^)]+)\)", html[search_start:])
+                link_match = re.search(r"\]\((https?://[^)]+)\)", html[search_start:])
                 if not link_match:
                     continue
 
@@ -1042,21 +821,16 @@ class Tools:
                     continue
                 seen_urls.add(img_url)
 
-                # Extract title from inside the match: ![Image N: Title]
-                match_text = img_match.group()
-                if ":" in match_text:
-                    title = match_text.split("]", 1)[0].split(":", 1)[1].strip()
-                else:
-                    title = ""
-                if not title:
-                    title = img_url
-
                 parsed = urlparse(img_url)
                 params = parse_qs(parsed.query)
                 if "u" in params:
                     target_url = unquote(params["u"][0])
                 else:
                     target_url = img_url
+
+                title_start = img_match.end()
+                title_end = search_start + link_match.start()
+                title = html[title_start:title_end].strip()
 
                 redirect_url = UrlRedirect.store(target_url)
                 results.append(f"{len(results) + 1}. [{title}]({redirect_url})")
@@ -1071,9 +845,65 @@ class Tools:
 
     @staticmethod
     async def _run_search(query: str, max_results: int = 5) -> str:
-        result = await search_with_fallbacks(query, DuckDuckGoLiteSearch(), max_results)
-        if result:
-            return result
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "sv-SE,sv;q=0.9",
+            "Cache-Control": "max-age=0",
+            "Priority": "u=0, i",
+            "Sec-Ch-Ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Linux"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "DNT": "1",
+            "Connection": "keep-alive",
+        }
+
+        delays = [0.2, 0.3, 0.4]
+        endpoints = [
+            ("https://lite.duckduckgo.com/lite/?q=", None),
+            (
+                "https://r.jina.ai/https://lite.duckduckgo.com/lite/?q=",
+                "jina",
+            ),
+        ]
+
+        for url_prefix, endpoint_type in endpoints:
+            url = f"{url_prefix}{query}"
+            for attempt, delay in enumerate(delays):
+                try:
+                    response = await AsyncHttp.get(url, timeout=10, headers=headers)
+                    response.raise_for_status()
+
+                    if endpoint_type == "jina":
+                        text = response.text.strip()
+                        urls = re.findall(r"https?://[^\s\)\]\"']+", text)
+                        for url in urls:
+                            redirect_url = UrlRedirect.store(url)
+                            text = text.replace(url, redirect_url)
+                        return text
+
+                    parser = DuckDuckGoLiteSearch()
+                    parser.feed(response.text)
+                    results = parser.get_results(max_results)
+                    if results:
+                        lines = []
+                        for i, r in enumerate(results, 1):
+                            redirect_url = UrlRedirect.store(r["url"])
+                            lines.append(f"{i}. [{r['title']}]({redirect_url})")
+                            if r["snippet"]:
+                                lines.append(f"   {r['snippet']}")
+                            lines.append("")
+                        return "\n".join(lines).strip()
+                except Exception:
+                    if attempt < len(delays) - 1:
+                        time.sleep(delay)
+                        continue
+
         return "Search failed after retries."
 
     @staticmethod
