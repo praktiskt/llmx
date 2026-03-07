@@ -19,6 +19,37 @@ from urllib.parse import parse_qs, unquote, urlparse
 import requests
 
 
+class ConversionCache:
+    """Simple in‑memory cache for URL → markdown conversion.
+    The CLI runs short‑lived, so we keep it unbounded.
+    """
+
+    _store: dict[str, str] = {}
+
+    @classmethod
+    def get(cls, url: str) -> str | None:
+        return cls._store.get(url)
+
+    @classmethod
+    def set(cls, url: str, markdown: str) -> None:
+        cls._store[url] = markdown
+
+
+def _convert_to_markdown(text: str, url: str, content_type: str) -> str:
+    """Convert raw response text to markdown.
+    * If the URL is a Jina AI raw endpoint, return the text verbatim.
+    * If the content type indicates HTML or the URL ends with .html/.htm, we parse it.
+    * Otherwise we assume the payload is already plain text/markdown.
+    """
+    if url.startswith("https://r.jina.ai/"):
+        return text
+    if "text/html" in content_type or url.lower().endswith((".html", ".htm")):
+        parser = HTMLToMarkdown()
+        parser.feed(text)
+        return parser.get_markdown()
+    return text
+
+
 class AsyncHttp:
     @staticmethod
     async def get(url: str, **kwargs) -> requests.Response:
@@ -31,29 +62,41 @@ class AsyncHttp:
     @staticmethod
     async def head(url: str) -> requests.Response:
         return await asyncio.to_thread(
-            requests.head, url, timeout=5, headers={"User-Agent": "Mozilla/5.0"}
+            requests.head,
+            url,
+            timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"},
         )
 
     @staticmethod
     async def get_markdown(url: str, original_url: str | None = None) -> str | None:
         original_url = original_url or url
+        # Check cache first – avoid duplicate network + parsing work
+        cached = ConversionCache.get(url)
+        if cached is not None:
+            return cached
         try:
             response = await AsyncHttp.get(
-                url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+                url,
+                timeout=10,
+                headers={"User-Agent": "Mozilla/5.0"},
             )
             if response.status_code != 200:
                 return None
 
+            # Decide if the content is binary – same logic as before
             content_type = response.headers.get("Content-Type", "").lower()
-            if url.startswith("https://r.jina.ai/"):
-                return response.text
-            if "text/html" in content_type or original_url.lower().endswith(
-                (".html", ".htm")
-            ):
-                parser = HTMLToMarkdown()
-                parser.feed(response.text)
-                return parser.get_markdown()
-            return response.text
+            is_binary = is_binary_url(url, content_type)
+
+            if is_binary:
+                # Binary URLs are handled elsewhere (Jina/web2md fallback).
+                # We simply return None here – the caller will invoke the binary pathway.
+                return None
+
+            markdown = _convert_to_markdown(response.text, original_url, content_type)
+            # Store for future calls
+            ConversionCache.set(url, markdown)
+            return markdown
         except Exception:
             return None
 
@@ -206,7 +249,7 @@ class HTMLToMarkdown(HTMLParser):
     SELF_CLOSING = {"br": "\n", "hr": "\n---\n"}
     BLOCKS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "pre"}
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.result = []
         self.tag_stack = []
@@ -232,7 +275,7 @@ class HTMLToMarkdown(HTMLParser):
         }
         self.in_pre = self.in_code = self.in_blockquote = False
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag, attrs) -> None:
         t = tag.lower()
         attrs_dict = dict(attrs)
         self.tag_stack.append(t)
@@ -275,10 +318,10 @@ class HTMLToMarkdown(HTMLParser):
                 self.list_stack[-1] = ("ol", lst[1] + 1)
         elif t == "img":
             self.result.append(
-                f"![{attrs_dict.get('alt', '')}]({attrs_dict.get('src', '')})"
+                f"![{attrs_dict.get('alt', '')}]({attrs_dict.get('src', '')})",
             )
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag) -> None:
         t = tag.lower()
         if self.tag_stack and self.tag_stack[-1] == t:
             self.tag_stack.pop()
@@ -306,7 +349,7 @@ class HTMLToMarkdown(HTMLParser):
         elif t in ("ul", "ol") and self.list_stack:
             self.list_stack.pop()
 
-    def handle_data(self, data):
+    def handle_data(self, data) -> None:
         for tag in self.tag_stack:
             if tag in self.ignore_tags:
                 return
@@ -322,9 +365,7 @@ class HTMLToMarkdown(HTMLParser):
         in_inline_only = any(t in self.INLINE for t in self.tag_stack)
         in_block = any(t in self.BLOCKS for t in self.tag_stack)
 
-        if in_inline_only and not in_block:
-            self.result.append(data)
-        elif in_block:
+        if (in_inline_only and not in_block) or in_block:
             self.result.append(data)
         else:
             text = " ".join(data.split())
@@ -336,14 +377,14 @@ class HTMLToMarkdown(HTMLParser):
 
 
 class DuckDuckGoLiteSearch(HTMLParser):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.results = []
         self.current_url = ""
         self.current_title = ""
         self.in_link = False
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag, attrs) -> None:
         attrs_dict = dict(attrs)
         if tag == "a":
             href = attrs_dict.get("href", "")
@@ -352,7 +393,7 @@ class DuckDuckGoLiteSearch(HTMLParser):
                 self.current_url = href
                 self.current_title = ""
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag) -> None:
         if tag == "a" and self.in_link:
             self.in_link = False
             if self.current_url and self.current_title:
@@ -364,10 +405,10 @@ class DuckDuckGoLiteSearch(HTMLParser):
                         "url": unquote(actual_url),
                         "title": self.current_title.strip(),
                         "snippet": "",
-                    }
+                    },
                 )
 
-    def handle_data(self, data):
+    def handle_data(self, data) -> None:
         if self.in_link:
             self.current_title += data
 
@@ -406,7 +447,9 @@ class Cache:
 
     @staticmethod
     def read(
-        file_ids: list[str], offset: int | None = None, limit: int | None = None
+        file_ids: list[str],
+        offset: int | None = None,
+        limit: int | None = None,
     ) -> str:
         results = []
         for file_id in file_ids:
@@ -425,13 +468,11 @@ class Cache:
 
             if offset is None:
                 offset = 1
-            if offset < 1:
-                offset = 1
+            offset = max(offset, 1)
 
             if limit is None:
                 limit = 50
-            if limit < 1:
-                limit = 1
+            limit = max(limit, 1)
 
             start = offset - 1
             end = start + limit
@@ -476,13 +517,18 @@ class Cache:
                 except re.error as e:
                     results.append(f"Error: invalid regex: {e}")
                     continue
-                matcher = lambda line: regex.search(line) is not None
+
+                def matcher(line):
+                    return regex.search(line) is not None
+            elif ignore_case:
+                pattern_lower = pattern.lower()
+
+                def matcher(line):
+                    return pattern_lower in line.lower()
             else:
-                if ignore_case:
-                    pattern_lower = pattern.lower()
-                    matcher = lambda line: pattern_lower in line.lower()
-                else:
-                    matcher = lambda line: pattern in line
+
+                def matcher(line):
+                    return pattern in line
 
             matched_indices = set()
             for i, line in enumerate(lines):
@@ -499,7 +545,8 @@ class Cache:
                 context_indices = set()
                 for idx in matched_indices:
                     for j in range(
-                        max(0, idx - context), min(total_lines, idx + context + 1)
+                        max(0, idx - context),
+                        min(total_lines, idx + context + 1),
                     ):
                         context_indices.add(j)
                 matched_indices = context_indices
@@ -518,7 +565,7 @@ class Cache:
                 groups.append(current_group)
 
             output_lines = [
-                f'File {file_id}: {len(all_matched_indices)} matches for "{pattern}"'
+                f'File {file_id}: {len(all_matched_indices)} matches for "{pattern}"',
             ]
             match_count = 0
             truncated = False
@@ -539,7 +586,7 @@ class Cache:
             if len(all_matched_indices) > Config.GREP_MAX_MATCHES:
                 output_lines.append("--")
                 output_lines.append(
-                    f"... {len(all_matched_indices) - Config.GREP_MAX_MATCHES} more matches not shown"
+                    f"... {len(all_matched_indices) - Config.GREP_MAX_MATCHES} more matches not shown",
                 )
 
             results.append("\n".join(output_lines))
@@ -565,7 +612,8 @@ class UrlRedirect:
     @staticmethod
     def resolve(redirect_url: str) -> str | None:
         match = re.match(
-            r"^https://redirect/([a-f0-9]{8})(\.png|\.jpg|\.jpeg|\.gif)?$", redirect_url
+            r"^https://redirect/([a-f0-9]{8})(\.png|\.jpg|\.jpeg|\.gif)?$",
+            redirect_url,
         )
         if not match:
             return None
@@ -578,7 +626,8 @@ class UrlRedirect:
             url = match.group(0)
 
             if re.match(
-                r"^https://redirect/[a-f0-9]{8}(\.png|\.jpg|\.jpeg|\.gif)?$", url
+                r"^https://redirect/[a-f0-9]{8}(\.png|\.jpg|\.jpeg|\.gif)?$",
+                url,
             ):
                 return url
 
@@ -612,7 +661,7 @@ class Tools:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "List of URLs to fetch (at least one)",
-                        }
+                        },
                     },
                     "required": ["urls"],
                 },
@@ -761,7 +810,7 @@ class Tools:
             },
         }
 
-        is_binary = False
+        # Determine binary status via a cheap HEAD request.
         try:
             response = await AsyncHttp.head(url)
             if response.status_code == 200:
@@ -771,12 +820,14 @@ class Tools:
         except Exception:
             is_binary = is_binary_url(url)
 
+        # For binary URLs we only need the Jina or web2md conversion.
         if is_binary:
             result = await first_success(
                 AsyncHttp.get_markdown(f"https://r.jina.ai/{url}"),
                 AsyncHttp.post_markdown("https://web2md.site/api/convert", web2md_body),
             )
         else:
+            # Normal pages: try native markdown, Jina fallback, then web2md.
             result = await first_success(
                 AsyncHttp.get_markdown(url),
                 AsyncHttp.get_markdown(f"https://r.jina.ai/{url}"),
@@ -823,10 +874,7 @@ class Tools:
 
                 parsed = urlparse(img_url)
                 params = parse_qs(parsed.query)
-                if "u" in params:
-                    target_url = unquote(params["u"][0])
-                else:
-                    target_url = img_url
+                target_url = unquote(params["u"][0]) if "u" in params else img_url
 
                 title_start = img_match.end()
                 title_end = search_start + link_match.start()
@@ -908,7 +956,9 @@ class Tools:
 
     @staticmethod
     async def search(
-        queries: list[str], max_results: int = 5, images_only: bool = False
+        queries: list[str],
+        max_results: int = 5,
+        images_only: bool = False,
     ) -> str:
         file_ids = []
         for query in queries:
@@ -980,7 +1030,7 @@ class Tools:
 
                 return (file_id, directive, summary)
             except Exception as e:
-                return (file_id, directive, f"Error summarizing: {str(e)}")
+                return (file_id, directive, f"Error summarizing: {e!s}")
 
         tasks = []
         for file_id in file_ids:
@@ -1093,7 +1143,10 @@ class Tools:
                 suggested_limit = max(
                     10,
                     int(
-                        current_limit * Config.MAX_TOOL_RESULT_CHARS / len(result) * 0.8
+                        current_limit
+                        * Config.MAX_TOOL_RESULT_CHARS
+                        / len(result)
+                        * 0.8,
                     ),
                 )
                 args["limit"] = suggested_limit
@@ -1128,7 +1181,8 @@ class LLMClient:
                 {
                     "role": "system",
                     "content": os.environ.get(
-                        "LLM_SYSTEM_PROMPT", Config.get_system_prompt()
+                        "LLM_SYSTEM_PROMPT",
+                        Config.get_system_prompt(),
                     ),
                 },
                 {"role": "user", "content": " ".join(prompt)},
@@ -1155,7 +1209,8 @@ class LLMClient:
             {
                 "role": "system",
                 "content": os.environ.get(
-                    "LLM_SYSTEM_PROMPT", Config.get_system_prompt()
+                    "LLM_SYSTEM_PROMPT",
+                    Config.get_system_prompt(),
                 ),
             },
             {"role": "user", "content": " ".join(prompt)},
@@ -1179,7 +1234,7 @@ class LLMClient:
 
             if 400 <= response.status_code < 500:
                 Log.stderr(
-                    f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}, retrying{Color.RESET}"
+                    f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}, retrying{Color.RESET}",
                 )
                 response = await AsyncHttp.post(
                     os.environ["LLM_HOST"],
@@ -1190,7 +1245,7 @@ class LLMClient:
 
             if response.status_code != 200:
                 Log.stderr(
-                    f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}{Color.RESET}"
+                    f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}{Color.RESET}",
                 )
                 sys.exit(1)
 
@@ -1230,8 +1285,8 @@ class LLMClient:
                 Log.stderr(
                     Color.tool(
                         tool_name,
-                        f"[tool] {tool_name}({', '.join(f'{k}={repr(v)}' for k, v in args.items())})",
-                    )
+                        f"[tool] {tool_name}({', '.join(f'{k}={v!r}' for k, v in args.items())})",
+                    ),
                 )
 
             results = {}
@@ -1249,7 +1304,7 @@ class LLMClient:
                         "role": "tool",
                         "tool_call_id": tool_id,
                         "content": results.get(tool_id, ""),
-                    }
+                    },
                 )
 
 
