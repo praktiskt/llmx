@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import mimetypes
 import os
@@ -383,7 +382,6 @@ class Cache:
         wrapped_lines = []
         for line in content.splitlines():
             line = re.sub(r"(data:[^,]+,)[^)\s]+", r"\1[TRUNCATED]", line)
-            line = UrlRedirect.replace_in_text(line)
 
             if len(line) <= 200:
                 wrapped_lines.append(line)
@@ -547,57 +545,6 @@ class Cache:
         return "\n\n---\n\n".join(results)
 
 
-class UrlRedirect:
-    _redirects: dict[str, str] = {}
-
-    @staticmethod
-    def _hash_url(url: str) -> str:
-        return hashlib.md5(url.encode()).hexdigest()[:8]
-
-    @staticmethod
-    def store(url: str, extension: str | None = None) -> str:
-        redirect_id = UrlRedirect._hash_url(url)
-        UrlRedirect._redirects[redirect_id] = url
-        if extension:
-            return f"https://redirect/{redirect_id}.{extension}"
-        return f"https://redirect/{redirect_id}"
-
-    @staticmethod
-    def resolve(redirect_url: str) -> str | None:
-        match = re.match(
-            r"^https://redirect/([a-f0-9]{8})(\.png|\.jpg|\.jpeg|\.gif)?$", redirect_url
-        )
-        if not match:
-            return None
-        redir_id = match.group(1)
-        return UrlRedirect._redirects.get(redir_id)
-
-    @staticmethod
-    def replace_in_text(text: str) -> str:
-        def replace_url(match):
-            url = match.group(0)
-
-            if re.match(
-                r"^https://redirect/[a-f0-9]{8}(\.png|\.jpg|\.jpeg|\.gif)?$", url
-            ):
-                return url
-
-            ext = None
-            if url.lower().endswith(".png"):
-                ext = "png"
-            elif url.lower().endswith(".jpg") or url.lower().endswith(".jpeg"):
-                ext = "jpg"
-            elif url.lower().endswith(".gif"):
-                ext = "gif"
-            return UrlRedirect.store(url, ext)
-
-        return re.sub(r"https?://[^\s\)\]\"\'<>]+", replace_url, text)
-
-    @staticmethod
-    def clear() -> None:
-        UrlRedirect._redirects = {}
-
-
 class Tools:
     SCHEMA = [
         {
@@ -743,10 +690,6 @@ class Tools:
 
     @staticmethod
     async def _fetch_single(url: str) -> str:
-        resolved_url = UrlRedirect.resolve(url)
-        if resolved_url:
-            url = resolved_url
-
         def store_and_return(content: str) -> str:
             file_id = Config.generate_file_id()
             Cache.store(file_id, content)
@@ -832,8 +775,7 @@ class Tools:
                 title_end = search_start + link_match.start()
                 title = html[title_start:title_end].strip()
 
-                redirect_url = UrlRedirect.store(target_url)
-                results.append(f"{len(results) + 1}. [{title}]({redirect_url})")
+                results.append(f"{len(results) + 1}. [{title}]({target_url})")
                 if len(results) >= max_results:
                     break
 
@@ -880,12 +822,7 @@ class Tools:
                     response.raise_for_status()
 
                     if endpoint_type == "jina":
-                        text = response.text.strip()
-                        urls = re.findall(r"https?://[^\s\)\]\"']+", text)
-                        for url in urls:
-                            redirect_url = UrlRedirect.store(url)
-                            text = text.replace(url, redirect_url)
-                        return text
+                        return response.text.strip()
 
                     parser = DuckDuckGoLiteSearch()
                     parser.feed(response.text)
@@ -893,8 +830,7 @@ class Tools:
                     if results:
                         lines = []
                         for i, r in enumerate(results, 1):
-                            redirect_url = UrlRedirect.store(r["url"])
-                            lines.append(f"{i}. [{r['title']}]({redirect_url})")
+                            lines.append(f"{i}. [{r['title']}]({r['url']})")
                             if r["snippet"]:
                                 lines.append(f"   {r['snippet']}")
                             lines.append("")
@@ -1222,11 +1158,6 @@ class LLMClient:
                 except json.JSONDecodeError:
                     args = {}
                 tool_name = func.get("name", "unknown")
-                if tool_name == "fetch" and "urls" in args:
-                    args = {
-                        **args,
-                        "urls": [UrlRedirect.resolve(u) or u for u in args["urls"]],
-                    }
                 Log.stderr(
                     Color.tool(
                         tool_name,
@@ -1255,7 +1186,6 @@ class LLMClient:
 
 async def main() -> None:
     with suppress(KeyboardInterrupt):
-        UrlRedirect.clear()
         prompt = [*sys.argv[1:]]
         if not sys.stdin.isatty():
             prompt.extend(["\n\n", *sys.stdin.read().splitlines()])
