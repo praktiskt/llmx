@@ -9,7 +9,6 @@ import random
 import re
 import string
 import sys
-import time
 from contextlib import suppress
 from datetime import date
 from html.parser import HTMLParser
@@ -33,67 +32,12 @@ class AsyncHttp:
             requests.head, url, timeout=5, headers={"User-Agent": "Mozilla/5.0"}
         )
 
-    @staticmethod
-    async def get_markdown(url: str, original_url: str | None = None) -> str | None:
-        original_url = original_url or url
-        try:
-            response = await AsyncHttp.get(
-                url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            if response.status_code != 200:
-                return None
-
-            content_type = response.headers.get("Content-Type", "").lower()
-            if url.startswith("https://r.jina.ai/"):
-                return response.text
-            if "text/html" in content_type or original_url.lower().endswith(
-                (".html", ".htm")
-            ):
-                parser = HTMLToMarkdown()
-                parser.feed(response.text)
-                return parser.get_markdown()
-            return response.text
-        except Exception:
-            return None
-
-    @staticmethod
-    async def post_markdown(url: str, body: dict) -> str | None:
-        try:
-            response = await AsyncHttp.post(
-                url,
-                json=body,
-                timeout=10,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Content-Type": "application/json",
-                },
-            )
-            if response.status_code != 200:
-                return None
-            return response.json().get("markdown")
-        except Exception:
-            return None
-
 
 def is_binary_url(url: str, content_type: str | None = None) -> bool:
     mime = content_type or mimetypes.guess_type(url)[0]
     if mime is None:
         return False
     return not mime.startswith("text/")
-
-
-async def first_success(*coroutines):
-    tasks = [asyncio.create_task(coro) for coro in coroutines]
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
-    for task in done:
-        result = task.result()
-        if result is not None:
-            for t in pending:
-                t.cancel()
-            return result
-
-    return None
 
 
 class Log:
@@ -168,6 +112,18 @@ class Config:
         return os.environ.get("LLM_SHOW_THINKING", "True").lower() == "true"
 
     @staticmethod
+    def markdown_fetch_proxy() -> str | None:
+        return os.environ.get("LLM_MARKDOWN_FETCH_PROXY")
+
+    @staticmethod
+    def markdown_search_proxy() -> str | None:
+        return os.environ.get("LLM_MARKDOWN_SEARCH_PROXY")
+
+    @staticmethod
+    def markdown_image_search_proxy() -> str | None:
+        return os.environ.get("LLM_MARKDOWN_IMAGE_SEARCH_PROXY")
+
+    @staticmethod
     def get_system_prompt() -> str:
         today = date.today().isoformat()
         return (
@@ -190,148 +146,6 @@ class Config:
         if not re.match(r"^[a-z0-9]{6}$", file_id):
             return f"invalid file_id '{file_id}'. Must be 6 lowercase alphanumeric characters (e.g., 'abc123'). Do NOT invent file_ids - only use IDs returned by fetch."
         return None
-
-
-class HTMLToMarkdown(HTMLParser):
-    HEADERS = {
-        "h1": "\n# ",
-        "h2": "\n## ",
-        "h3": "\n### ",
-        "h4": "\n#### ",
-        "h5": "\n##### ",
-        "h6": "\n###### ",
-    }
-    INLINE = {"strong": "**", "b": "**", "em": "*", "i": "*"}
-    SELF_CLOSING = {"br": "\n", "hr": "\n---\n"}
-    BLOCKS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "pre"}
-
-    def __init__(self):
-        super().__init__()
-        self.result = []
-        self.tag_stack = []
-        self.list_stack = []
-        self.ignore_tags = {
-            "script",
-            "style",
-            "noscript",
-            "head",
-            "meta",
-            "link",
-            "base",
-            "template",
-            "object",
-            "embed",
-            "applet",
-            "canvas",
-            "source",
-            "track",
-            "map",
-            "area",
-            "portal",
-        }
-        self.in_pre = self.in_code = self.in_blockquote = False
-
-    def handle_starttag(self, tag, attrs):
-        t = tag.lower()
-        attrs_dict = dict(attrs)
-        self.tag_stack.append(t)
-
-        if t in self.ignore_tags:
-            return
-
-        if t in self.HEADERS:
-            self.result.append(self.HEADERS[t])
-        elif t in self.SELF_CLOSING:
-            self.result.append(self.SELF_CLOSING[t])
-        elif t in self.INLINE:
-            self.result.append(self.INLINE[t])
-        elif t == "p":
-            self.result.append("\n\n")
-        elif t == "a":
-            self.href = attrs_dict.get("href", "")
-            self.result.append("[")
-        elif t == "code":
-            self.in_code = True
-            self.result.append("`" if not self.in_pre else "")
-        elif t == "pre":
-            self.in_pre = True
-            self.result.append("\n```\n")
-        elif t == "blockquote":
-            self.in_blockquote = True
-            self.result.append("\n> ")
-        elif t == "ul":
-            self.list_stack.append("ul")
-            self.result.append("\n")
-        elif t == "ol":
-            self.list_stack.append(("ol", 1))
-            self.result.append("\n")
-        elif t == "li" and self.list_stack:
-            lst = self.list_stack[-1]
-            if lst == "ul":
-                self.result.append("- ")
-            else:
-                self.result.append(f"{lst[1]}. ")
-                self.list_stack[-1] = ("ol", lst[1] + 1)
-        elif t == "img":
-            self.result.append(
-                f"![{attrs_dict.get('alt', '')}]({attrs_dict.get('src', '')})"
-            )
-
-    def handle_endtag(self, tag):
-        t = tag.lower()
-        if self.tag_stack and self.tag_stack[-1] == t:
-            self.tag_stack.pop()
-
-        if t in self.ignore_tags:
-            return
-
-        if t in self.HEADERS:
-            self.result.append("\n")
-        elif t in self.INLINE:
-            self.result.append(self.INLINE[t])
-        elif t == "a":
-            self.result.append(f"]({getattr(self, 'href', '')})")
-        elif t == "code":
-            self.in_code = False
-            self.result.append("`" if not self.in_pre else "")
-        elif t == "pre":
-            self.in_pre = False
-            self.result.append("\n```\n")
-        elif t == "blockquote":
-            self.in_blockquote = False
-            self.result.append("\n")
-        elif t == "li":
-            self.result.append("\n")
-        elif t in ("ul", "ol") and self.list_stack:
-            self.list_stack.pop()
-
-    def handle_data(self, data):
-        for tag in self.tag_stack:
-            if tag in self.ignore_tags:
-                return
-        if self.in_pre:
-            self.result.append(data)
-            return
-        if self.in_blockquote:
-            for line in data.split("\n"):
-                if line.strip():
-                    self.result.append(line)
-            return
-
-        in_inline_only = any(t in self.INLINE for t in self.tag_stack)
-        in_block = any(t in self.BLOCKS for t in self.tag_stack)
-
-        if in_inline_only and not in_block:
-            self.result.append(data)
-        elif in_block:
-            self.result.append(data)
-        else:
-            text = " ".join(data.split())
-            if text:
-                self.result.append(text)
-
-    def get_markdown(self):
-        return "".join(self.result).strip()
 
 
 class DuckDuckGoLiteSearch(HTMLParser):
@@ -551,7 +365,7 @@ class Tools:
             "type": "function",
             "function": {
                 "name": "fetch",
-                "description": "Fetch content from URLs and return as markdown",
+                "description": "Fetch content from URLs",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -695,40 +509,22 @@ class Tools:
             Cache.store(file_id, content)
             return f'Stored as {file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (file_id="{file_id}")'
 
-        web2md_body = {
-            "url": url,
-            "options": {
-                "includeTitle": True,
-                "includeLinks": True,
-                "improveReadability": True,
-            },
-        }
-
-        is_binary = False
-        try:
-            response = await AsyncHttp.head(url)
+        proxy = Config.markdown_fetch_proxy()
+        if proxy:
+            fetch_url = f"{proxy.rstrip('/')}/{url}"
+            response = await AsyncHttp.get(
+                fetch_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
+            )
             if response.status_code == 200:
-                is_binary = is_binary_url(url, response.headers.get("Content-Type"))
-            else:
-                is_binary = is_binary_url(url)
-        except Exception:
-            is_binary = is_binary_url(url)
+                return store_and_return(response.text)
+            return "fetch failed (proxy returned non-200)"
 
-        if is_binary:
-            result = await first_success(
-                AsyncHttp.get_markdown(f"https://r.jina.ai/{url}"),
-                AsyncHttp.post_markdown("https://web2md.site/api/convert", web2md_body),
-            )
-        else:
-            result = await first_success(
-                AsyncHttp.get_markdown(url),
-                AsyncHttp.get_markdown(f"https://r.jina.ai/{url}"),
-                AsyncHttp.post_markdown("https://web2md.site/api/convert", web2md_body),
-            )
-
-        if result:
-            return store_and_return(result)
-        return "fetch failed (no content)"
+        response = await AsyncHttp.get(
+            url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if response.status_code == 200:
+            return store_and_return(response.text)
+        return f"fetch failed (status {response.status_code})"
 
     @staticmethod
     async def fetch(urls: list[str]) -> str:
@@ -742,9 +538,16 @@ class Tools:
     async def _search_images(query: str, max_results: int = 5) -> str:
         from urllib.parse import quote
 
-        url = f"https://r.jina.ai/https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
+        proxy = Config.markdown_image_search_proxy()
+        if proxy:
+            url = f"{proxy.rstrip('/')}?q={quote(query)}&ia=images&iax=images"
+        else:
+            url = f"https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
+
         try:
-            response = await AsyncHttp.get(url, timeout=10)
+            response = await AsyncHttp.get(
+                url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+            )
             response.raise_for_status()
             html = response.text
             results = []
@@ -787,6 +590,8 @@ class Tools:
 
     @staticmethod
     async def _run_search(query: str, max_results: int = 5) -> str:
+        from urllib.parse import quote
+
         headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -805,40 +610,41 @@ class Tools:
             "Connection": "keep-alive",
         }
 
-        delays = [0.2, 0.3, 0.4]
-        endpoints = [
-            ("https://lite.duckduckgo.com/lite/?q=", None),
-            (
-                "https://r.jina.ai/https://lite.duckduckgo.com/lite/?q=",
-                "jina",
-            ),
-        ]
-
-        for url_prefix, endpoint_type in endpoints:
-            url = f"{url_prefix}{query}"
-            for attempt, delay in enumerate(delays):
+        proxy = Config.markdown_search_proxy()
+        if proxy:
+            url = f"{proxy.rstrip('/')}?q={quote(query)}"
+            for attempt in range(3):
                 try:
                     response = await AsyncHttp.get(url, timeout=10, headers=headers)
                     response.raise_for_status()
-
-                    if endpoint_type == "jina":
-                        return response.text.strip()
-
-                    parser = DuckDuckGoLiteSearch()
-                    parser.feed(response.text)
-                    results = parser.get_results(max_results)
-                    if results:
-                        lines = []
-                        for i, r in enumerate(results, 1):
-                            lines.append(f"{i}. [{r['title']}]({r['url']})")
-                            if r["snippet"]:
-                                lines.append(f"   {r['snippet']}")
-                            lines.append("")
-                        return "\n".join(lines).strip()
+                    return response.text.strip()
                 except Exception:
-                    if attempt < len(delays) - 1:
-                        time.sleep(delay)
+                    if attempt < 2:
+                        await asyncio.sleep(0.3 * (attempt + 1))
                         continue
+            return "Search failed after retries."
+
+        url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
+        for attempt in range(3):
+            try:
+                response = await AsyncHttp.get(url, timeout=10, headers=headers)
+                response.raise_for_status()
+
+                parser = DuckDuckGoLiteSearch()
+                parser.feed(response.text)
+                results = parser.get_results(max_results)
+                if results:
+                    lines = []
+                    for i, r in enumerate(results, 1):
+                        lines.append(f"{i}. [{r['title']}]({r['url']})")
+                        if r["snippet"]:
+                            lines.append(f"   {r['snippet']}")
+                        lines.append("")
+                    return "\n".join(lines).strip()
+            except Exception:
+                if attempt < 2:
+                    await asyncio.sleep(0.3 * (attempt + 1))
+                    continue
 
         return "Search failed after retries."
 
