@@ -365,14 +365,18 @@ class Tools:
             "type": "function",
             "function": {
                 "name": "fetch",
-                "description": "Fetch content from URLs",
+                "description": "Fetch content from URLs." + ""
+                if not Config.markdown_fetch_proxy()
+                else " Response is always Markdown.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "List of URLs to fetch (at least one)",
+                            "description": "List of URLs to fetch (at least one)" + ""
+                            if not Config.markdown_fetch_proxy()
+                            else " as markdown",
                         }
                     },
                     "required": ["urls"],
@@ -540,7 +544,7 @@ class Tools:
 
         proxy = Config.markdown_image_search_proxy()
         if proxy:
-            url = f"{proxy.rstrip('/')}?q={quote(query)}&ia=images&iax=images"
+            url = f"{proxy.rstrip('/')}/{quote(query)}"
         else:
             url = f"https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
 
@@ -549,6 +553,9 @@ class Tools:
                 url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}
             )
             response.raise_for_status()
+            if proxy:
+                return response.text
+
             html = response.text
             results = []
             seen_urls = set()
@@ -612,7 +619,7 @@ class Tools:
 
         proxy = Config.markdown_search_proxy()
         if proxy:
-            url = f"{proxy.rstrip('/')}?q={quote(query)}"
+            url = f"{proxy.rstrip('/')}/{quote(query)}"
             for attempt in range(3):
                 try:
                     response = await AsyncHttp.get(url, timeout=10, headers=headers)
