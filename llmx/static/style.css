@@ -89,13 +89,14 @@ body {
     50% { opacity: 0.4; }
 }
 .result-toggle {
-    color: var(--teal);
+    color: var(--peach);
     cursor: pointer;
     font-size: 0.75rem;
     user-select: none;
 }
-.result-toggle.expanded { color: var(--mauve); }
+.result-toggle.expanded { color: var(--peach); }
 .result-content.collapsed { display: none; }
+.result-content { max-height: 300px; overflow-y: auto; }
 .tool-result .result-label { color: var(--teal); }
 #input-area {
     position: fixed;

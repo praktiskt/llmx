@@ -136,8 +136,7 @@ def format_tool_call(tool_name: str, args: dict, result: str | None = None) -> s
     escaped_args = html.escape(args_str)
 
     if result:
-        truncated = result[:500] + ("..." if len(result) > 500 else "")
-        escaped_result = html.escape(truncated)
+        escaped_result = html.escape(result)
         result_html = f"""<span class="result-toggle" onclick="this.classList.toggle('expanded'); const c = this.nextElementSibling; c.classList.toggle('collapsed'); this.textContent = this.classList.contains('expanded') ? '[▲ result]' : '[▼ result]'">[▼ result]</span><pre class="result-content collapsed"><code>{escaped_result}</code></pre>"""
     else:
         result_html = '<span class="tool-loading">running...</span>'
@@ -382,9 +381,7 @@ async def stream_response(
 
             tool_id, result = await execute_with_retry(tool_call)
 
-            escaped_result = html.escape(
-                result[:500] + ("..." if len(result) > 500 else "")
-            )
+            escaped_result = html.escape(result)
             yield f"data: {json.dumps({'type': 'tool_result', 'content': escaped_result})}\n\n"
 
             if await request.is_disconnected():
