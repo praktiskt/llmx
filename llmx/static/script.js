@@ -204,6 +204,14 @@ function handleEvent(event) {
         addMessage(content, 'thinking');
     } else if (type === 'tool_call') {
         addMessage(content, 'tool-call');
+    } else if (type === 'tool_result') {
+        const lastToolCall = chat.querySelector('.message.tool-call:last-child');
+        if (lastToolCall) {
+            const loading = lastToolCall.querySelector('.tool-loading');
+            if (loading) loading.remove();
+            const resultHtml = `<span class="result-toggle" onclick="this.classList.toggle('expanded'); const c = this.nextElementSibling; c.classList.toggle('collapsed'); this.textContent = this.classList.contains('expanded') ? '[▲ result]' : '[▼ result]'">[▼ result]</span><pre class="result-content collapsed"><code>${content}</code></pre>`;
+            lastToolCall.insertAdjacentHTML('beforeend', resultHtml);
+        }
     } else if (type === 'message') {
         addMessage(content, 'assistant');
     }

@@ -78,6 +78,16 @@ body {
 .message.tool-result { background: var(--crust); border-left: 3px solid var(--teal); font-size: 0.8125rem; min-width: 200px; }
 .tool-call .tool-name { color: var(--peach); font-weight: 600; }
 .tool-call .tool-args { color: var(--subtext1); margin-top: 0.25rem; }
+.tool-loading {
+    display: inline-block;
+    color: var(--peach);
+    font-size: 0.75rem;
+    animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
 .result-toggle {
     color: var(--teal);
     cursor: pointer;
