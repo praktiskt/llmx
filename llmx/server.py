@@ -24,20 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .llm import Config, Tools, UrlRedirect
-
-
-def resolve_redirects(text: str) -> str:
-    def replace_redirect(match):
-        url = match.group(0)
-        resolved = UrlRedirect.resolve(url)
-        return resolved if resolved else url
-
-    return re.sub(
-        r"https://redirect/[a-f0-9]{8}(\.png|\.jpg|\.jpeg|\.gif)?",
-        replace_redirect,
-        text,
-    )
+from .llm import Config, Tools
 
 
 for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
@@ -145,18 +132,14 @@ def get_session(session_id: str | None = None) -> tuple[Session, str]:
 
 
 def format_tool_call(tool_name: str, args: dict, result: str | None = None) -> str:
-    if tool_name == "fetch" and "urls" in args:
-        args = {**args, "urls": [UrlRedirect.resolve(u) or u for u in args["urls"]]}
     args_str = json.dumps(args, indent=2)
     escaped_args = html.escape(args_str)
 
     if result:
-        result = resolve_redirects(result)
-        truncated = result[:500] + ("..." if len(result) > 500 else "")
-        escaped_result = html.escape(truncated)
+        escaped_result = html.escape(result)
         result_html = f"""<span class="result-toggle" onclick="this.classList.toggle('expanded'); const c = this.nextElementSibling; c.classList.toggle('collapsed'); this.textContent = this.classList.contains('expanded') ? '[▲ result]' : '[▼ result]'">[▼ result]</span><pre class="result-content collapsed"><code>{escaped_result}</code></pre>"""
     else:
-        result_html = ""
+        result_html = '<span class="tool-loading">running...</span>'
 
     return f'<span class="tool-name">{html.escape(tool_name)}</span>\n<div class="tool-args"><pre><code>{escaped_args}</code></pre></div>{result_html}'
 
@@ -197,7 +180,6 @@ def get_session_id_from_cookie(request: Request) -> str | None:
 def format_message(content: str) -> str:
     content = content.rstrip()
     content = re.sub(r"•\s*", "- ", content)
-    content = resolve_redirects(content)
 
     has_backticks = "```" in content
     md = mistune.create_markdown(
@@ -395,8 +377,12 @@ async def stream_response(
             except json.JSONDecodeError:
                 args = {}
 
+            yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, None)})}\n\n"
+
             tool_id, result = await execute_with_retry(tool_call)
-            yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, result)})}\n\n"
+
+            escaped_result = html.escape(result)
+            yield f"data: {json.dumps({'type': 'tool_result', 'content': escaped_result})}\n\n"
 
             if await request.is_disconnected():
                 return
