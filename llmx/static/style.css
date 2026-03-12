@@ -82,7 +82,14 @@ body {
     display: inline-block;
     color: var(--peach);
     font-size: 0.75rem;
+    -webkit-animation: pulse 1s ease-in-out infinite;
     animation: pulse 1s ease-in-out infinite;
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+}
+@-webkit-keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
 }
 @keyframes pulse {
     0%, 100% { opacity: 1; }

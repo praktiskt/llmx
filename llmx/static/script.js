@@ -181,6 +181,17 @@ async function send() {
                 }
             }
         }
+        
+        if (buffer.startsWith('data: ')) {
+            const data = buffer.slice(6);
+            if (data !== '[DONE]') {
+                try {
+                    const event = JSON.parse(data);
+                    handleEvent(event);
+                } catch (e) {
+                }
+            }
+        }
     } catch (e) {
         clearTyping();
         if (e.name === 'AbortError') {
