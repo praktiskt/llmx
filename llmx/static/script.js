@@ -237,7 +237,7 @@ sendBtn.addEventListener('click', () => {
 });
 trashBtn.addEventListener('click', () => {
     if (confirm('Will create a new session and delete this, continue?')) {
-        window.location.href = '/';
+        window.location.href = '/new-session';
     }
 });
 input.addEventListener('keydown', e => {

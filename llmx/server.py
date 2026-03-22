@@ -250,6 +250,12 @@ def format_message(content: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
+    html_path = STATIC_DIR / "landing.html"
+    return HTMLResponse(content=html_path.read_text())
+
+
+@app.get("/new-session", response_class=HTMLResponse)
+async def new_session():
     session, session_id = get_session(None)
     return RedirectResponse(f"/{session_id}")
 

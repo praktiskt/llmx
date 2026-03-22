@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, minimal-ui">
+    <title>server</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100dvh;
+            background: var(--base);
+            color: var(--text);
+        }
+        .landing-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.5rem;
+        }
+        .landing-card h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text);
+            margin: 0;
+        }
+        .landing-card a {
+            display: inline-block;
+            background: var(--blue);
+            color: var(--crust);
+            border: 2px solid var(--surface2);
+            border-radius: var(--radius);
+            padding: 0.625rem 1.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .landing-card a:hover {
+            background: var(--sapphire);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="landing-card">
+        <h1>llmx</h1>
+        <a href="/new-session">new session</a>
+    </div>
+</body>
+
+</html>
