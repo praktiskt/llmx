@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import random
@@ -15,6 +16,8 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncHttp:
@@ -593,6 +596,7 @@ class Tools:
                 return "No images found."
             return "\n".join(results)
         except Exception:
+            logger.error("Image search failed for query: %s", query, exc_info=True)
             return "Image search failed."
 
     @staticmethod
@@ -627,8 +631,18 @@ class Tools:
                     return response.text.strip()
                 except Exception:
                     if attempt < 2:
+                        logger.warning(
+                            "Search proxy attempt %d failed for '%s', retrying...",
+                            attempt + 1,
+                            query,
+                        )
                         await asyncio.sleep(0.3 * (attempt + 1))
                         continue
+                    logger.error(
+                        "Search proxy failed after retries for '%s'",
+                        query,
+                        exc_info=True,
+                    )
             return "Search failed after retries."
 
         url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
@@ -650,8 +664,18 @@ class Tools:
                     return "\n".join(lines).strip()
             except Exception:
                 if attempt < 2:
+                    logger.warning(
+                        "DuckDuckGo search attempt %d failed for '%s', retrying...",
+                        attempt + 1,
+                        query,
+                    )
                     await asyncio.sleep(0.3 * (attempt + 1))
                     continue
+                logger.error(
+                    "DuckDuckGo search failed after retries for '%s'",
+                    query,
+                    exc_info=True,
+                )
 
         return "Search failed after retries."
 
@@ -720,6 +744,11 @@ class Tools:
                     timeout=60,
                 )
                 if response.status_code != 200:
+                    logger.error(
+                        "Summarize API error %d for file %s",
+                        response.status_code,
+                        file_id,
+                    )
                     return (file_id, directive, f"Error: {response.status_code}")
 
                 summary = response.json()["choices"][0]["message"]["content"]
@@ -729,6 +758,9 @@ class Tools:
 
                 return (file_id, directive, summary)
             except Exception as e:
+                logger.error(
+                    "Summarize failed for file %s: %s", file_id, e, exc_info=True
+                )
                 return (file_id, directive, f"Error summarizing: {str(e)}")
 
         tasks = []
@@ -826,6 +858,9 @@ class Tools:
         try:
             args = json.loads(args_str)
         except json.JSONDecodeError:
+            logger.warning(
+                "Failed to parse tool arguments for %s: %r", tool_name, args_str[:200]
+            )
             args = {}
         result = await Tools.execute(tool_name, args)
 

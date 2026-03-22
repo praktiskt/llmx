@@ -6,6 +6,7 @@ import html
 import json
 import logging
 import os
+import sys
 import re
 import traceback
 import uuid
@@ -16,6 +17,11 @@ from typing import AsyncGenerator
 STATIC_DIR = Path(__file__).parent / "static"
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
 
 import httpx
 import mistune
@@ -167,6 +173,40 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    import time
+
+    start = time.monotonic()
+    session_id = get_session_id_from_cookie(request)
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        response = await call_next(request)
+        duration_ms = (time.monotonic() - start) * 1000
+        logger.info(
+            "%s %s %d %.0fms client=%s session=%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+            client_ip,
+            session_id or "-",
+        )
+        return response
+    except Exception:
+        duration_ms = (time.monotonic() - start) * 1000
+        logger.error(
+            "%s %s FAILED %.0fms client=%s session=%s\n%s",
+            request.method,
+            request.url.path,
+            duration_ms,
+            client_ip,
+            session_id or "-",
+            traceback.format_exc(),
+        )
+        raise
+
+
 def get_session_id_from_cookie(request: Request) -> str | None:
     cookie = request.headers.get("Cookie", "")
     for part in cookie.split(";"):
@@ -232,6 +272,10 @@ async def post_chat(request: Request, session_id: str | None = None):
         data = await request.json()
         user_message = data.get("message", "")
     except Exception:
+        logger.warning(
+            "Invalid JSON in /chat request from %s",
+            request.client.host if request.client else "unknown",
+        )
         return {"error": "Invalid JSON"}
 
     if not session_id:
@@ -245,6 +289,7 @@ async def post_chat(request: Request, session_id: str | None = None):
             async for event in stream_response(session, request):
                 yield event
         except Exception as e:
+            logger.error("stream_response error: %s\n%s", e, traceback.format_exc())
             yield f"data: {json.dumps({'type': 'message', 'content': f'Error: {str(e)}'})}\n\n"
 
         yield "data: [DONE]\n\n"
@@ -325,6 +370,11 @@ async def stream_response(
                 )
                 continue
 
+            logger.error(
+                "API error %d: %s",
+                response.status_code,
+                response.text[:500],
+            )
             yield (
                 "data: "
                 + json.dumps(
@@ -341,6 +391,10 @@ async def stream_response(
             return
 
         if response is None or response.status_code != 200:
+            logger.error(
+                "API max retries exceeded (last status: %s)",
+                response.status_code if response else "no response",
+            )
             yield f"data: {json.dumps({'type': 'message', 'content': 'API Error: Max retries exceeded'})}\n\n"
             return
 
@@ -374,6 +428,11 @@ async def stream_response(
             try:
                 args = json.loads(func.get("arguments", "{}"))
             except json.JSONDecodeError:
+                logger.warning(
+                    "Failed to parse tool arguments for %s: %r",
+                    tool_name,
+                    func.get("arguments", ""),
+                )
                 args = {}
 
             yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, None)})}\n\n"
