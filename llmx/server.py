@@ -26,7 +26,6 @@ from fastapi.staticfiles import StaticFiles
 
 from .llm import Config, Tools
 
-
 for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
     logging.getLogger(name).addFilter(
         lambda r: not (r.exc_info and isinstance(r.exc_info[1], asyncio.CancelledError))
@@ -97,7 +96,7 @@ Extra capabilities:
     * Page is in dark mode, using catppuccin-mocha CSS variables: --base, --mantle, --crust, --text, --subtext1, --surface0, --surface1, --surface2, --overlay0, --blue, --lavender, --mauve, --red, --peach, --yellow, --green, --teal, --sky, --sapphire.
     * Use inline styles like style="color: var(--blue)" or style="background: var(--surface1)". Do not use global style changes.
     * Response must be contained within a single div.
-    * If you include remote content (e.g., images), use the fetch tool to verify the content exists.
+    * If you include remote content (e.g., images), use the fetch tool to verify the content exists. Make sure images point to real URLs (not relative).
     * If tables are included, make sure they are horizontably scrollable.
 * You can fetch recent news from news.praktiskt.dev/ with query params:
     * keywords=<comma,separated,list>
