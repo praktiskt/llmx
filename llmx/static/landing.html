@@ -52,6 +52,13 @@
         <h1>llmx</h1>
         <a href="/new-session">new session</a>
     </div>
+    <script>
+        document.addEventListener('keydown', e => {
+            if (e.key === 'n' && !e.target.matches('input, textarea')) {
+                window.location.href = '/new-session';
+            }
+        });
+    </script>
 </body>
 
 </html>
