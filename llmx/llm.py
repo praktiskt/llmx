@@ -709,11 +709,11 @@ class Tools:
     ) -> str:
         async def summarize_task(task: tuple) -> tuple:
             file_id, directive, content = task
-            if len(content) > 100_000:
+            if len(content) > 180_000:
                 return (
                     file_id,
                     directive,
-                    f"Error: Content too large ({len(content)} chars, max 100k). Use summarize with offset/limit to select a smaller section.",
+                    f"Error: Content too large ({len(content)} chars, max 180k). Use summarize with offset/limit to select a smaller section.",
                 )
             tokens_for_summary = max(250, max_length * 2)
             messages = [
