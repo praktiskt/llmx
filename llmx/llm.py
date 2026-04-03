@@ -683,15 +683,16 @@ class Tools:
     async def search(
         queries: list[str], max_results: int = 5, images_only: bool = False
     ) -> str:
-        file_ids = []
-        for query in queries:
+        async def search_task(query: str) -> tuple[str, str]:
             if images_only:
                 result = await Tools._search_images(query, max_results)
             else:
                 result = await Tools._run_search(query, max_results)
             file_id = Config.generate_file_id()
             Cache.store(file_id, result)
-            file_ids.append((query, file_id))
+            return (query, file_id)
+
+        file_ids = await asyncio.gather(*(search_task(query) for query in queries))
 
         lines = [f"Query '{q}' stored in file_id={fid}" for q, fid in file_ids]
         lines.append("")
