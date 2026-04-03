@@ -45,7 +45,7 @@ def get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None:
         _http_client = httpx.AsyncClient(
-            timeout=5.0,
+            timeout=120,
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
     return _http_client
@@ -324,14 +324,143 @@ async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str
                 logger.warning(
                     f"Tool '{tool_name}' failed (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {str(e)}"
                 )
-                continue
             else:
+                logger.error(
+                    f"Tool '{tool_name}' failed after {max_retries} attempts: {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+                )
                 return (
                     tool_id,
-                    f"Tool '{tool_name}' failed after {max_retries} attempts: {type(e).__name__}: {str(e)}",
+                    f"Error: {tool_name} failed after {max_retries} attempts: {type(e).__name__}: {str(e)}",
                 )
 
-    return (tool_id, f"Tool '{tool_name}' failed: max retries exceeded")
+    return tool_id, "Error: Max retries exceeded"
+
+
+async def stream_response(
+    session: Session, request: Request
+) -> AsyncGenerator[str, None]:
+    headers = {
+        "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    max_iterations = 100
+
+    client = get_http_client()
+    for _ in range(max_iterations):
+        payload = {
+            "messages": session.messages,
+            "model": os.environ["LLM_MODEL"],
+            "temperature": float(os.environ.get("LLM_TEMPERATURE", 0.1)),
+            "stream": False,
+        }
+
+        if Config.tools_enabled():
+            payload["tools"] = Tools.SCHEMA
+
+        response = None
+        for attempt in range(5):
+            response = await client.post(
+                os.environ["LLM_HOST"],
+                headers=headers,
+                json=payload,
+            )
+
+            if response.status_code == 200:
+                break
+
+            if response.status_code == 429:
+                logger.warning(
+                    f"API rate limited (attempt {attempt + 1}/5), retrying..."
+                )
+                continue
+
+            logger.error(
+                "API error %d: %s",
+                response.status_code,
+                response.text[:500],
+            )
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "message",
+                        "content": "API Error "
+                        + str(response.status_code)
+                        + ": "
+                        + response.text[:200],
+                    }
+                )
+                + "\n\n"
+            )
+            return
+
+        if response is None or response.status_code != 200:
+            logger.error(
+                "API max retries exceeded (last status: %s)",
+                response.status_code if response else "no response",
+            )
+            yield f"data: {json.dumps({'type': 'message', 'content': 'API Error: Max retries exceeded'})}\n\n"
+            return
+
+        data = response.json()
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message", {})
+
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        if reasoning:
+            escaped_reasoning = html.escape(reasoning)
+            content_val = (
+                f"<span class='thinking-header'>thinking</span>{escaped_reasoning}"
+            )
+            yield f"data: {json.dumps({'type': 'thinking', 'content': content_val})}\n\n"
+
+        tool_calls = message.get("tool_calls", [])
+        if not tool_calls or not Config.tools_enabled():
+            content = message.get("content", "")
+            if content:
+                yield f"data: {json.dumps({'type': 'message', 'content': format_message(content)})}\n\n"
+                session.messages.append(
+                    {"role": "assistant", "content": content, "reasoning": reasoning}
+                )
+            return
+
+        session.messages.append({**message, "reasoning": reasoning})
+
+        for tool_call in tool_calls:
+            func = tool_call.get("function", {})
+            tool_name = func.get("name", "unknown")
+            try:
+                args = json.loads(func.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Failed to parse tool arguments for %s: %r",
+                    tool_name,
+                    func.get("arguments", ""),
+                )
+                args = {}
+
+            yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, None)})}\n\n"
+
+            tool_id, result = await execute_with_retry(tool_call)
+
+            escaped_result = html.escape(result)
+            yield f"data: {json.dumps({'type': 'tool_result', 'content': escaped_result})}\n\n"
+
+            if await request.is_disconnected():
+                return
+
+            session.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": result,
+                }
+            )
+
+        if await request.is_disconnected():
+            return
 
 
 def main():
