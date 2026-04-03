@@ -360,12 +360,17 @@ async def stream_response(
             payload["tools"] = Tools.SCHEMA
 
         response = None
+        last_attempt_failed = False
         for attempt in range(5):
-            response = await client.post(
-                os.environ["LLM_HOST"],
-                headers=headers,
-                json=payload,
-            )
+            try:
+                response = await client.post(
+                    os.environ["LLM_HOST"],
+                    headers=headers,
+                    json=payload,
+                )
+            except httpx.ReadTimeout:
+                last_attempt_failed = attempt == 4
+                continue
 
             if response.status_code == 200:
                 break
@@ -397,6 +402,16 @@ async def stream_response(
             return
 
         if response is None or response.status_code != 200:
+            if last_attempt_failed:
+                session.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "All 5 attempts to my LLM providers timed out. Do you want me to try again?",
+                    }
+                )
+                yield f"data: {json.dumps({'type': 'message', 'content': 'All 5 attempts to my LLM providers timed out. Want me to try again?'})}\n\n"
+                return
+
             logger.error(
                 "API max retries exceeded (last status: %s)",
                 response.status_code if response else "no response",

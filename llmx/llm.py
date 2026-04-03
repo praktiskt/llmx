@@ -737,32 +737,49 @@ class Tools:
                 "Content-Type": "application/json",
             }
 
-            try:
-                response = await AsyncHttp.post(
-                    os.environ["LLM_HOST"],
-                    headers=headers,
-                    json=payload,
-                    timeout=60,
-                )
-                if response.status_code != 200:
-                    logger.error(
-                        "Summarize API error %d for file %s",
-                        response.status_code,
-                        file_id,
+            last_error = None
+            for attempt in range(5):
+                try:
+                    response = await AsyncHttp.post(
+                        os.environ["LLM_HOST"],
+                        headers=headers,
+                        json=payload,
+                        timeout=5,
                     )
-                    return (file_id, directive, f"Error: {response.status_code}")
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        f"Summarize attempt {attempt + 1}/5 failed for {file_id}: {e}"
+                    )
+                    continue
 
-                summary = response.json()["choices"][0]["message"]["content"]
-
-                if len(summary) > max_length:
-                    summary = summary[: max_length - 3] + "..."
-
-                return (file_id, directive, summary)
-            except Exception as e:
+            if last_error is not None:
                 logger.error(
-                    "Summarize failed for file %s: %s", file_id, e, exc_info=True
+                    "Summarize failed for file %s after 5 attempts: %s",
+                    file_id,
+                    last_error,
                 )
-                return (file_id, directive, f"Error summarizing: {str(e)}")
+                return (
+                    file_id,
+                    directive,
+                    f"Error summarizing: All 5 attempts timed out. Do you want me to try again?",
+                )
+
+            if response.status_code != 200:
+                logger.error(
+                    "Summarize API error %d for file %s",
+                    response.status_code,
+                    file_id,
+                )
+                return (file_id, directive, f"Error: {response.status_code}")
+
+            summary = response.json()["choices"][0]["message"]["content"]
+
+            if len(summary) > max_length:
+                summary = summary[: max_length - 3] + "..."
+
+            return (file_id, directive, summary)
 
         tasks = []
         for file_id in file_ids:
