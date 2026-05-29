@@ -1018,6 +1018,7 @@ class LLMClient:
 
             message.pop("reasoning_content", None)
             message.pop("reasoning", None)
+            message.pop("provider_specific_fields", None)
             messages.append(message)
 
             for tool_call in tool_calls:

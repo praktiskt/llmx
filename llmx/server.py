@@ -442,6 +442,7 @@ async def stream_response(
             return
 
         message.pop("reasoning_content", None)
+        message.pop("provider_specific_fields", None)
         session.messages.append({**message, "reasoning": reasoning})
 
         for tool_call in tool_calls:
