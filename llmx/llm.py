@@ -744,7 +744,7 @@ class Tools:
                         os.environ["LLM_HOST"],
                         headers=headers,
                         json=payload,
-                        timeout=5,
+                        timeout=10,
                     )
                     break
                 except Exception as e:
@@ -977,6 +977,7 @@ class LLMClient:
                 headers=headers,
                 data=json.dumps(msg),
                 stream=False,
+                timeout=60,
             )
 
             if 400 <= response.status_code < 500:
@@ -988,6 +989,7 @@ class LLMClient:
                     headers=headers,
                     data=json.dumps(msg),
                     stream=False,
+                    timeout=60,
                 )
 
             if response.status_code != 200:
@@ -1014,6 +1016,8 @@ class LLMClient:
                     Log.stdout(content)
                 return
 
+            message.pop("reasoning_content", None)
+            message.pop("reasoning", None)
             messages.append(message)
 
             for tool_call in tool_calls:
