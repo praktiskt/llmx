@@ -368,7 +368,7 @@ async def stream_response(
                     headers=headers,
                     json=payload,
                 )
-            except httpx.ReadTimeout:
+            except httpx.HTTPError:
                 last_attempt_failed = attempt == 4
                 continue
 

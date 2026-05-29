@@ -4,13 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import mimetypes
 import os
 import random
 import re
 import string
 import sys
-from contextlib import suppress
 from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
@@ -34,13 +32,6 @@ class AsyncHttp:
         return await asyncio.to_thread(
             requests.head, url, timeout=5, headers={"User-Agent": "Mozilla/5.0"}
         )
-
-
-def is_binary_url(url: str, content_type: str | None = None) -> bool:
-    mime = content_type or mimetypes.guess_type(url)[0]
-    if mime is None:
-        return False
-    return not mime.startswith("text/")
 
 
 class Log:
@@ -88,8 +79,6 @@ class Config:
     CONTENT_THRESHOLD = 5000
     MAX_TOOL_RESULT_CHARS = 8000
     GREP_MAX_MATCHES = 50
-    BINARY_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".epub", ".doc"}
-
     @staticmethod
     def response_format():
         return os.environ.get("LLM_RESPONSE_FORMAT", None)
@@ -922,20 +911,7 @@ class Tools:
 
 class LLMClient:
     @staticmethod
-    def body(prompt: list[str] | None = None, messages: list | None = None) -> str:
-        if prompt is None:
-            prompt = []
-        if messages is None:
-            messages = [
-                {
-                    "role": "system",
-                    "content": os.environ.get(
-                        "LLM_SYSTEM_PROMPT", Config.get_system_prompt()
-                    ),
-                },
-                {"role": "user", "content": " ".join(prompt)},
-            ]
-
+    def body(messages: list) -> dict:
         d = {
             "messages": messages,
             "model": os.environ["LLM_MODEL"],
@@ -949,7 +925,7 @@ class LLMClient:
         if Config.tools_enabled():
             d["tools"] = Tools.SCHEMA
 
-        return json.dumps(d)
+        return d
 
     @staticmethod
     async def stream(prompt: list[str]) -> None:
@@ -970,7 +946,7 @@ class LLMClient:
         }
 
         while True:
-            msg = json.loads(LLMClient.body(messages=messages))
+            msg = LLMClient.body(messages=messages)
 
             response = await AsyncHttp.post(
                 os.environ["LLM_HOST"],
@@ -980,10 +956,11 @@ class LLMClient:
                 timeout=60,
             )
 
-            if 400 <= response.status_code < 500:
+            if response.status_code in (408, 429) or response.status_code >= 500:
                 Log.stderr(
                     f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}, retrying{Color.RESET}"
                 )
+                await asyncio.sleep(1)
                 response = await AsyncHttp.post(
                     os.environ["LLM_HOST"],
                     headers=headers,
@@ -1056,11 +1033,10 @@ class LLMClient:
 
 
 async def main() -> None:
-    with suppress(KeyboardInterrupt):
-        prompt = [*sys.argv[1:]]
-        if not sys.stdin.isatty():
-            prompt.extend(["\n\n", *sys.stdin.read().splitlines()])
-        await LLMClient.stream(prompt)
+    prompt = [*sys.argv[1:]]
+    if not sys.stdin.isatty():
+        prompt.extend(["\n\n", *sys.stdin.read().splitlines()])
+    await LLMClient.stream(prompt)
 
 
 if __name__ == "__main__":
