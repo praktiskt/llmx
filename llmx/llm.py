@@ -903,7 +903,7 @@ class Tools:
 
         num_files = len(file_ids)
         num_directives = len(args.get("directives", []))
-        total_summaries = num_files * max(1, num_directives)
+        total_summaries = max(1, num_files) * max(1, num_directives)
         suggested_max_length = max(500, Config.MAX_TOOL_RESULT_CHARS // total_summaries)
 
         return (
