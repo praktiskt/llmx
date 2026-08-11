@@ -868,7 +868,14 @@ class Tools:
             logger.warning(
                 "Failed to parse tool arguments for %s: %r", tool_name, args_str[:200]
             )
-            args = {}
+            fixed = re.sub(r'(?<=[\w\s])"(?=[\w\s])', r'\"', args_str)
+            fixed = re.sub(r'(,)\s*\\"', r'\1 "', fixed)
+            fixed = re.sub(r'(\[)\s*\\"', r'\1 "', fixed)
+            fixed = re.sub(r'\\"\s*(,|\])', r'"\1', fixed)
+            try:
+                args = json.loads(fixed)
+            except json.JSONDecodeError:
+                args = {}
         result = await Tools.execute(tool_name, args)
 
         if len(result) <= Config.MAX_TOOL_RESULT_CHARS:
