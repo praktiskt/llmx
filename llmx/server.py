@@ -6,22 +6,13 @@ import html
 import json
 import logging
 import os
-import sys
 import re
+import sys
 import traceback
 import uuid
+from collections.abc import AsyncGenerator
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import AsyncGenerator
-
-STATIC_DIR = Path(__file__).parent / "static"
-
-logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    stream=sys.stderr,
-)
 
 import httpx
 import mistune
@@ -31,6 +22,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .llm import Config, Tools
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
 
 for name in ("uvicorn.error", "uvicorn.asgi", "asyncio"):
     logging.getLogger(name).addFilter(
@@ -288,7 +288,7 @@ async def post_chat(request: Request, session_id: str | None = None):
         session_id = get_session_id_from_cookie(request)
     session, new_session_id = get_session(session_id)
 
-    async def event_generator() -> AsyncGenerator[str, None]:
+    async def event_generator() -> AsyncGenerator[str]:
         session.messages.append({"role": "user", "content": user_message})
 
         try:
@@ -336,9 +336,7 @@ async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str
     return tool_id, "Error: Max retries exceeded"
 
 
-async def stream_response(
-    session: Session, request: Request
-) -> AsyncGenerator[str, None]:
+async def stream_response(session: Session, request: Request) -> AsyncGenerator[str]:
     headers = {
         "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
         "Content-Type": "application/json",

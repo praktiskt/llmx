@@ -79,6 +79,7 @@ class Config:
     CONTENT_THRESHOLD = 5000
     MAX_TOOL_RESULT_CHARS = 8000
     GREP_MAX_MATCHES = 50
+
     @staticmethod
     def response_format():
         return os.environ.get("LLM_RESPONSE_FORMAT", None)
@@ -280,13 +281,20 @@ class Cache:
                 except re.error as e:
                     results.append(f"Error: invalid regex: {e}")
                     continue
-                matcher = lambda line: regex.search(line) is not None
+
+                def matcher(line: str, regex=regex) -> bool:
+                    return regex.search(line) is not None
+
+            elif ignore_case:
+                pattern_lower = pattern.lower()
+
+                def matcher(line: str, pattern_lower=pattern_lower) -> bool:
+                    return pattern_lower in line.lower()
+
             else:
-                if ignore_case:
-                    pattern_lower = pattern.lower()
-                    matcher = lambda line: pattern_lower in line.lower()
-                else:
-                    matcher = lambda line: pattern in line
+
+                def matcher(line: str, pattern=pattern) -> bool:
+                    return pattern in line
 
             matched_indices = set()
             for i, line in enumerate(lines):
@@ -752,7 +760,7 @@ class Tools:
                 return (
                     file_id,
                     directive,
-                    f"Error summarizing: All 5 attempts timed out. Do you want me to try again?",
+                    "Error summarizing: All 5 attempts timed out. Do you want me to try again?",
                 )
 
             if response.status_code != 200:
@@ -798,7 +806,7 @@ class Tools:
 
         results = await asyncio.gather(*(run_task(task) for task in tasks))
         results_map: dict[str, list[str]] = {}
-        for file_id, directive, result in results:
+        for file_id, _, result in results:
             if file_id not in results_map:
                 results_map[file_id] = []
             results_map[file_id].append(result)
@@ -1059,10 +1067,14 @@ class LLMClient:
 
                 if Config.thinking_enabled():
                     reasoning = (
-                        message.get("reasoning_content") or message.get("reasoning") or ""
+                        message.get("reasoning_content")
+                        or message.get("reasoning")
+                        or ""
                     )
                     if reasoning:
-                        Log.stderr(f"{Color.dim('[thinking]')} {Color.thinking(reasoning)}")
+                        Log.stderr(
+                            f"{Color.dim('[thinking]')} {Color.thinking(reasoning)}"
+                        )
 
             tool_calls = message.get("tool_calls", [])
             if not tool_calls or not Config.tools_enabled():
@@ -1105,7 +1117,6 @@ class LLMClient:
                         "content": results.get(tool_id, ""),
                     }
                 )
-
 
     @staticmethod
     async def _read_stream(response) -> dict:
