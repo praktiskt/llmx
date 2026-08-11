@@ -983,10 +983,11 @@ class LLMClient:
                 sys.exit(1)
 
             if Config.is_stream():
-                message = await LLMClient._read_stream(response)
+                message, printed = await LLMClient._read_stream(response)
             else:
                 data = response.json()
                 message = data.get("choices", [{}])[0].get("message", {})
+                printed = False
 
                 if Config.thinking_enabled():
                     reasoning = (
@@ -998,7 +999,7 @@ class LLMClient:
             tool_calls = message.get("tool_calls", [])
             if not tool_calls or not Config.tools_enabled():
                 content = message.get("content", "")
-                if content:
+                if content and not printed:
                     Log.stdout(content)
                 return
 
@@ -1047,6 +1048,17 @@ class LLMClient:
         reasoning_parts = []
         tool_calls: dict[int, dict] = {}
         final_message = None
+        reasoning_flushed = False
+
+        def flush_thinking() -> None:
+            nonlocal reasoning_flushed
+            if reasoning_flushed or not reasoning_parts:
+                return
+            reasoning_flushed = True
+            if Config.color_output_enabled():
+                Log.stderr(Color.RESET, end="")
+            if not "".join(reasoning_parts).endswith("\n"):
+                Log.stderr("")
 
         def append_thinking(fragment: str) -> None:
             if not Config.thinking_enabled() or not fragment:
@@ -1062,6 +1074,8 @@ class LLMClient:
         def append_content(fragment: str) -> None:
             if not fragment:
                 return
+            if reasoning_parts:
+                flush_thinking()
             content_parts.append(fragment)
             Log.stdout(fragment, end="", flush=True)
 
@@ -1124,16 +1138,12 @@ class LLMClient:
 
         content = "".join(content_parts)
         if content and not content.endswith("\n"):
-            Log.stdout("")
+            Log.stdout("", flush=True)
         reasoning = "".join(reasoning_parts)
-        if reasoning:
-            if Config.color_output_enabled():
-                Log.stderr(Color.RESET)
-            if not reasoning.endswith("\n"):
-                Log.stderr("")
+        flush_thinking()
 
         if not content and not reasoning and not tool_calls and final_message:
-            return final_message
+            return (final_message, False)
 
         message = {
             "role": "assistant",
@@ -1143,7 +1153,7 @@ class LLMClient:
             message["reasoning"] = reasoning
         if tool_calls:
             message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-        return message
+        return (message, bool(content_parts))
 
 
 async def main() -> None:
