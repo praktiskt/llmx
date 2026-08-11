@@ -814,12 +814,83 @@ class Tools:
         return "\n\n---\n\n".join(final_results)
 
     @staticmethod
+    def _repair_json(s: str) -> str:
+        out = []
+        in_string = False
+        i = 0
+        n = len(s)
+        while i < n:
+            ch = s[i]
+            if ch == "\\":
+                out.append(ch)
+                if i + 1 < n:
+                    out.append(s[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                if not in_string:
+                    in_string = True
+                    out.append(ch)
+                else:
+                    j = i + 1
+                    while j < n and s[j] in " \t\r\n":
+                        j += 1
+                    if j >= n or s[j] in ",]}:":
+                        in_string = False
+                        out.append(ch)
+                    else:
+                        out.append("\\")
+                        out.append(ch)
+            else:
+                out.append(ch)
+            i += 1
+        return "".join(out)
+
+    @staticmethod
+    def _unwrap_args(args: dict) -> dict:
+        out = {}
+        for key, value in args.items():
+            if isinstance(value, str):
+                trimmed = value.strip()
+                if trimmed[:1] in "[{":
+                    try:
+                        value = json.loads(trimmed)
+                    except json.JSONDecodeError:
+                        try:
+                            value = json.loads(Tools._repair_json(trimmed))
+                        except json.JSONDecodeError:
+                            pass
+            out[key] = value
+        return out
+
+    @staticmethod
+    def _parse_tool_args(args_str: str) -> dict:
+        try:
+            args = json.loads(args_str)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Failed to parse tool arguments, attempting repair: %r",
+                args_str[:200],
+            )
+            try:
+                args = json.loads(Tools._repair_json(args_str))
+            except json.JSONDecodeError:
+                args = {}
+        return Tools._unwrap_args(args)
+
+    @staticmethod
     async def execute(tool_name: str, tool_args: dict) -> str:
         if tool_name == "fetch":
-            return await Tools.fetch(tool_args.get("urls", []))
+            urls = tool_args.get("urls", [])
+            if isinstance(urls, str):
+                urls = [urls]
+            return await Tools.fetch(urls)
         if tool_name == "search":
+            queries = tool_args.get("queries", [])
+            if isinstance(queries, str):
+                queries = [queries]
             return await Tools.search(
-                tool_args.get("queries", []),
+                queries,
                 tool_args.get("max_results", 5),
                 tool_args.get("images_only", False),
             )
@@ -862,20 +933,7 @@ class Tools:
         func = tool_call.get("function", {})
         tool_name = func.get("name", "")
         args_str = func.get("arguments", "{}")
-        try:
-            args = json.loads(args_str)
-        except json.JSONDecodeError:
-            logger.warning(
-                "Failed to parse tool arguments for %s: %r", tool_name, args_str[:200]
-            )
-            fixed = re.sub(r'(?<=[\w\s])"(?=[\w\s])', r'\"', args_str)
-            fixed = re.sub(r'(,)\s*\\"', r'\1 "', fixed)
-            fixed = re.sub(r'(\[)\s*\\"', r'\1 "', fixed)
-            fixed = re.sub(r'\\"\s*(,|\])', r'"\1', fixed)
-            try:
-                args = json.loads(fixed)
-            except json.JSONDecodeError:
-                args = {}
+        args = Tools._parse_tool_args(args_str)
         result = await Tools.execute(tool_name, args)
 
         if len(result) <= Config.MAX_TOOL_RESULT_CHARS:
@@ -1021,10 +1079,7 @@ class LLMClient:
             for tool_call in tool_calls:
                 func = tool_call.get("function", {})
                 args_str = func.get("arguments", "{}")
-                try:
-                    args = json.loads(args_str)
-                except json.JSONDecodeError:
-                    args = {}
+                args = Tools._parse_tool_args(args_str)
                 tool_name = func.get("name", "unknown")
                 Log.stderr(
                     Color.tool(
