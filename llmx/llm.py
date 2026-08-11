@@ -1080,6 +1080,7 @@ class LLMClient:
             Log.stdout(fragment, end="", flush=True)
 
         try:
+            response.encoding = "utf-8"
             lines = response.iter_lines(decode_unicode=True)
             while True:
                 try:
