@@ -916,6 +916,16 @@ class Tools:
         )
 
 
+_STREAM_EOF = object()
+
+
+def _safe_next(iterator):
+    try:
+        return next(iterator)
+    except StopIteration:
+        return _STREAM_EOF
+
+
 class LLMClient:
     @staticmethod
     def body(messages: list) -> dict:
@@ -1083,9 +1093,8 @@ class LLMClient:
             response.encoding = "utf-8"
             lines = response.iter_lines(decode_unicode=True)
             while True:
-                try:
-                    line = await asyncio.to_thread(next, lines)
-                except StopIteration:
+                line = await asyncio.to_thread(_safe_next, lines)
+                if line is _STREAM_EOF:
                     break
                 if not line:
                     continue
