@@ -923,7 +923,7 @@ class LLMClient:
             "messages": messages,
             "model": os.environ["LLM_MODEL"],
             "temperature": float(os.environ.get("LLM_TEMPERATURE", 0.1)),
-            "stream": False,
+            "stream": Config.is_stream(),
         }
 
         if Config.response_format() is not None:
@@ -959,7 +959,7 @@ class LLMClient:
                 os.environ["LLM_HOST"],
                 headers=headers,
                 data=json.dumps(msg),
-                stream=False,
+                stream=Config.is_stream(),
                 timeout=60,
             )
 
@@ -982,16 +982,18 @@ class LLMClient:
                 )
                 sys.exit(1)
 
-            data = response.json()
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
+            if Config.is_stream():
+                message = await LLMClient._read_stream(response)
+            else:
+                data = response.json()
+                message = data.get("choices", [{}])[0].get("message", {})
 
-            if Config.thinking_enabled():
-                reasoning = (
-                    message.get("reasoning_content") or message.get("reasoning") or ""
-                )
-                if reasoning:
-                    Log.stderr(f"{Color.dim('[thinking]')} {Color.thinking(reasoning)}")
+                if Config.thinking_enabled():
+                    reasoning = (
+                        message.get("reasoning_content") or message.get("reasoning") or ""
+                    )
+                    if reasoning:
+                        Log.stderr(f"{Color.dim('[thinking]')} {Color.thinking(reasoning)}")
 
             tool_calls = message.get("tool_calls", [])
             if not tool_calls or not Config.tools_enabled():
@@ -1037,6 +1039,111 @@ class LLMClient:
                         "content": results.get(tool_id, ""),
                     }
                 )
+
+
+    @staticmethod
+    async def _read_stream(response) -> dict:
+        content_parts = []
+        reasoning_parts = []
+        tool_calls: dict[int, dict] = {}
+        final_message = None
+
+        def append_thinking(fragment: str) -> None:
+            if not Config.thinking_enabled() or not fragment:
+                return
+            if not reasoning_parts:
+                prefix = f"{Color.dim('[thinking]')} "
+                if Config.color_output_enabled():
+                    prefix += Color.THINKING
+                Log.stderr(prefix, end="", flush=True)
+            reasoning_parts.append(fragment)
+            Log.stderr(fragment, end="", flush=True)
+
+        def append_content(fragment: str) -> None:
+            if not fragment:
+                return
+            content_parts.append(fragment)
+            Log.stdout(fragment, end="", flush=True)
+
+        try:
+            lines = response.iter_lines(decode_unicode=True)
+            while True:
+                try:
+                    line = await asyncio.to_thread(next, lines)
+                except StopIteration:
+                    break
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+
+                choices = chunk.get("choices")
+                if not choices:
+                    if chunk.get("message"):
+                        final_message = chunk["message"]
+                    continue
+                choice = choices[0]
+
+                if choice.get("message"):
+                    final_message = choice["message"]
+
+                delta = choice.get("delta", {})
+                reasoning = (
+                    delta.get("reasoning_content") or delta.get("reasoning") or ""
+                )
+                if reasoning:
+                    append_thinking(reasoning)
+
+                content = delta.get("content") or ""
+                if content:
+                    append_content(content)
+
+                for tc in delta.get("tool_calls", []):
+                    index = tc.get("index", 0)
+                    entry = tool_calls.setdefault(
+                        index,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    entry["id"] = tc.get("id") or entry["id"] or f"call_{index}"
+                    fn = tc.get("function", {})
+                    entry["function"]["name"] += fn.get("name", "") or ""
+                    entry["function"]["arguments"] += fn.get("arguments", "") or ""
+        finally:
+            response.close()
+
+        content = "".join(content_parts)
+        if content and not content.endswith("\n"):
+            Log.stdout("")
+        reasoning = "".join(reasoning_parts)
+        if reasoning:
+            if Config.color_output_enabled():
+                Log.stderr(Color.RESET)
+            if not reasoning.endswith("\n"):
+                Log.stderr("")
+
+        if not content and not reasoning and not tool_calls and final_message:
+            return final_message
+
+        message = {
+            "role": "assistant",
+            "content": None if tool_calls and not content else content,
+        }
+        if reasoning:
+            message["reasoning"] = reasoning
+        if tool_calls:
+            message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+        return message
 
 
 async def main() -> None:
