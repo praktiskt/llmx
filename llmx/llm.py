@@ -516,19 +516,28 @@ class Tools:
         proxy = Config.markdown_fetch_proxy()
         if proxy:
             fetch_url = f"{proxy.rstrip('/')}/{url}"
-            response = await AsyncHttp.get(
-                fetch_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            if response.status_code == 200:
-                return store_and_return(response.text)
-            return "fetch failed (proxy returned non-200)"
+        else:
+            fetch_url = url
 
-        response = await AsyncHttp.get(
-            url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        if response.status_code == 200:
-            return store_and_return(response.text)
-        return f"fetch failed (status {response.status_code})"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = await AsyncHttp.get(fetch_url, timeout=30, headers=headers)
+                if response.status_code == 200:
+                    return store_and_return(response.text)
+                return f"fetch failed (status {response.status_code})"
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Fetch attempt %d/3 failed for %s: %s", attempt + 1, url, e
+                )
+                if attempt < 2:
+                    await asyncio.sleep(0.3 * (attempt + 1))
+                    continue
+
+        logger.error("Fetch failed for %s after 3 attempts: %s", url, last_error)
+        return f"fetch failed: {last_error}"
 
     @staticmethod
     async def fetch(urls: list[str]) -> str:
