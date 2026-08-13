@@ -750,7 +750,7 @@ class Tools:
                         os.environ["LLM_HOST"],
                         headers=headers,
                         json=payload,
-                        timeout=10,
+                        timeout=60,
                     )
                     break
                 except Exception as e:
@@ -758,6 +758,8 @@ class Tools:
                     logger.warning(
                         f"Summarize attempt {attempt + 1}/5 failed for {file_id}: {e}"
                     )
+                    if attempt < 4:
+                        await asyncio.sleep(0.5 * (attempt + 1))
                     continue
 
             if last_error is not None:
