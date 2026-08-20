@@ -373,9 +373,10 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
             if response.status_code == 200:
                 break
 
-            if response.status_code == 429:
+            if response.status_code >= 400:
+                last_attempt_failed = attempt == 4
                 logger.warning(
-                    f"API rate limited (attempt {attempt + 1}/5), retrying..."
+                    f"API error {response.status_code} (attempt {attempt + 1}/5): {response.text[:200]}, retrying..."
                 )
                 continue
 
