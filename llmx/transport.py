@@ -4,9 +4,12 @@ import asyncio
 import http.client
 import io
 import json
+import logging
 import threading
 from collections.abc import Awaitable, Callable
 from urllib.parse import urljoin, urlparse
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "Mozilla/5.0"
 
@@ -69,7 +72,7 @@ async def request_with_retries(
 
 
 class _PooledStream:
-    """Wraps an HTTPResponse whose connection returns to the pool on close."""
+    """Wraps an HTTPResponse whose connection is discarded on close."""
 
     def __init__(
         self, conn: http.client.HTTPConnection, resp: http.client.HTTPResponse
@@ -85,15 +88,15 @@ class _PooledStream:
         return iter(self._resp)
 
     def close(self) -> None:
+        # Streaming consumers may exit early ([DONE] sentinel, errors) leaving
+        # unread body bytes on the socket; pooling such a connection poisons
+        # the pool (next request reads stale bytes as its status line).
+        # Always discard streaming connections.
         try:
-            keep_alive = not self._resp.will_close and self._conn.sock is not None
             self._resp.close()
         except Exception:
-            keep_alive = False
-        if keep_alive:
-            _release_connection(self._conn)
-        else:
-            self._conn.close()
+            pass
+        _discard_connection(self._conn)
 
 
 class Response:
@@ -143,17 +146,26 @@ _pool: dict[tuple[str, str, int], list[http.client.HTTPConnection]] = {}
 _pool_lock = threading.Lock()
 
 
-def _checkout_connection(scheme: str, host: str, port: int, timeout: float | None):
+def _new_connection(
+    scheme: str, host: str, port: int, timeout: float | None
+) -> http.client.HTTPConnection:
+    if scheme == "https":
+        return http.client.HTTPSConnection(host, port=port, timeout=timeout)
+    return http.client.HTTPConnection(host, port=port, timeout=timeout)
+
+
+def _checkout_connection(
+    scheme: str, host: str, port: int, timeout: float | None
+) -> tuple[http.client.HTTPConnection, bool]:
+    """Return (connection, reused). Reused connections come from the idle pool."""
     key = (scheme, host, port)
     with _pool_lock:
         idle = _pool.get(key)
         if idle:
             conn = idle.pop()
             conn.timeout = timeout
-            return conn
-    if scheme == "https":
-        return http.client.HTTPSConnection(host, port=port, timeout=timeout)
-    return http.client.HTTPConnection(host, port=port, timeout=timeout)
+            return conn, True
+    return _new_connection(scheme, host, port, timeout), False
 
 
 def _release_connection(conn: http.client.HTTPConnection) -> None:
@@ -198,11 +210,31 @@ def _sync_request(method: str, url: str, **kwargs):
         if parsed.query:
             path += "?" + parsed.query
 
-        conn = _checkout_connection(parsed.scheme, host, port, timeout)
+        conn, reused = _checkout_connection(parsed.scheme, host, port, timeout)
         conn._llmx_scheme = parsed.scheme  # type: ignore[attr-defined]
         try:
-            conn.request(method, path, body=body, headers=headers)
-            resp = conn.getresponse()
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+            except (
+                http.client.BadStatusLine,
+                http.client.RemoteDisconnected,
+                ConnectionError,
+            ):
+                # A pooled connection may have been closed or poisoned by the
+                # server after it was released. Retry once on a fresh socket.
+                _discard_connection(conn)
+                if not reused:
+                    raise
+                logger.warning(
+                    "Reused connection to %s:%d was stale; retrying on fresh connection",
+                    host,
+                    port,
+                )
+                conn = _new_connection(parsed.scheme, host, port, timeout)
+                conn._llmx_scheme = parsed.scheme  # type: ignore[attr-defined]
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
             raw_headers = resp.headers
 
             if resp.status in _REDIRECT_STATUSES and "location" in raw_headers:
