@@ -1,4 +1,5 @@
 import asyncio
+import time
 import unittest
 
 from llmx.cache import Cache
@@ -299,6 +300,57 @@ class TruncateHistoryTest(unittest.TestCase):
                     self.assertEqual(out[i + 1].get("role"), "tool")
         finally:
             Config.MAX_CONTEXT_CHARS = old_limit
+
+
+class SessionStoreTest(unittest.TestCase):
+    def test_cap_evicts_oldest(self):
+        import llmx.server as srv
+
+        old_max = srv.MAX_SESSIONS
+        old_ttl = srv.SESSION_TTL_SECONDS
+        srv.MAX_SESSIONS = 3
+        srv.SESSION_TTL_SECONDS = 3600
+        try:
+            srv.sessions.clear()
+            for _ in range(5):
+                srv.get_session(None)
+            self.assertEqual(len(srv.sessions), 3)
+        finally:
+            srv.MAX_SESSIONS = old_max
+            srv.SESSION_TTL_SECONDS = old_ttl
+            srv.sessions.clear()
+
+    def test_expired_session_recreated(self):
+        import llmx.server as srv
+
+        old_ttl = srv.SESSION_TTL_SECONDS
+        srv.SESSION_TTL_SECONDS = 3600
+        try:
+            srv.sessions.clear()
+            s, sid = srv.get_session(None)
+            s.last_access -= 7200  # simulate age
+            s2, sid2 = srv.get_session(sid)
+            self.assertIsNot(s, s2)
+            self.assertEqual(sid2, sid)
+        finally:
+            srv.SESSION_TTL_SECONDS = old_ttl
+            srv.sessions.clear()
+
+    def test_live_session_touched(self):
+        import llmx.server as srv
+
+        old_ttl = srv.SESSION_TTL_SECONDS
+        srv.SESSION_TTL_SECONDS = 3600
+        try:
+            srv.sessions.clear()
+            s, sid = srv.get_session(None)
+            s.last_access -= 1800
+            s2, sid2 = srv.get_session(sid)
+            self.assertIs(s, s2)
+            self.assertGreater(s2.last_access, time.monotonic() - 5)
+        finally:
+            srv.SESSION_TTL_SECONDS = old_ttl
+            srv.sessions.clear()
 
 
 if __name__ == "__main__":

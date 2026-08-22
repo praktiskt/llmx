@@ -8,8 +8,10 @@ import logging
 import os
 import re
 import sys
+import time
 import traceback
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from html.parser import HTMLParser
 from pathlib import Path
@@ -95,6 +97,7 @@ class M(HTMLParser):
 
 class Session:
     def __init__(self):
+        self.last_access = time.monotonic()
         self._system_prompt = os.environ.get(
             "LLM_SYSTEM_PROMPT", Config.get_system_prompt()
         )
@@ -122,7 +125,10 @@ Extra capabilities:
         ]
 
 
-sessions: dict[str, Session] = {}
+SESSION_TTL_SECONDS = int(os.environ.get("LLM_SESSION_TTL", "3600"))
+MAX_SESSIONS = int(os.environ.get("LLM_MAX_SESSIONS", "200"))
+
+sessions: OrderedDict[str, Session] = OrderedDict()
 
 
 def generate_session_id() -> str:
@@ -130,12 +136,22 @@ def generate_session_id() -> str:
 
 
 def get_session(session_id: str | None = None) -> tuple[Session, str]:
-    global sessions
+    now = time.monotonic()
     if session_id and session_id in sessions:
-        return sessions[session_id], session_id
+        session = sessions[session_id]
+        if now - session.last_access <= SESSION_TTL_SECONDS:
+            session.last_access = now
+            sessions.move_to_end(session_id)
+            return sessions[session_id], session_id
+        logger.info("Session %s expired, creating new", session_id)
+        del sessions[session_id]
+
     new_session = Session()
     new_id = generate_session_id()
     sessions[new_id] = new_session
+    while len(sessions) > MAX_SESSIONS:
+        _, evicted = sessions.popitem(last=False)
+        logger.info("Evicted oldest session (limit %d)", MAX_SESSIONS)
     return new_session, new_id
 
 
@@ -178,8 +194,6 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    import time
-
     start = time.monotonic()
     session_id = get_session_id_from_cookie(request)
     client_ip = request.client.host if request.client else "unknown"
