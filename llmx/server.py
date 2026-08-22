@@ -201,6 +201,10 @@ async def log_requests(request: Request, call_next):
     try:
         response = await call_next(request)
         duration_ms = (time.monotonic() - start) * 1000
+        if request.url.path.startswith("/static"):
+            # Static assets change between deployments; never let browsers
+            # pin stale JS/CSS across releases.
+            response.headers["Cache-Control"] = "no-cache"
         logger.info(
             "%s %s %d %.0fms client=%s session=%s",
             request.method,
@@ -441,7 +445,6 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
         response = await request_with_retries(
             post_once,
             attempts=5,
-            fail_fast=True,
             on_exception=lambda a, e: logger.warning(
                 "API attempt %d/5 failed: %s", a, e
             ),
