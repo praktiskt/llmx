@@ -20,6 +20,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 logger = logging.getLogger(__name__)
 
 
+class LLMAPIError(RuntimeError):
+    pass
+
+
 class Response:
     def __init__(self, fp, preloaded: bytes | None = None):
         self._fp = fp
@@ -1151,11 +1155,9 @@ class LLMClient:
                     if response
                     else "all attempts raised"
                 )
-                Log.stderr(
-                    f"{Color.ERROR}[error]: API request failed after 5 attempts "
-                    f"(last status: {status}): {body}{Color.RESET}"
+                raise LLMAPIError(
+                    f"API request failed after 5 attempts (last status: {status}): {body}"
                 )
-                sys.exit(1)
 
             if Config.is_stream():
                 message, printed = await LLMClient._read_stream(response)
@@ -1351,7 +1353,11 @@ async def main() -> None:
     prompt = [*sys.argv[1:]]
     if not sys.stdin.isatty():
         prompt.extend(["\n\n", *sys.stdin.read().splitlines()])
-    await LLMClient.stream(prompt)
+    try:
+        await LLMClient.stream(prompt)
+    except LLMAPIError as e:
+        Log.stderr(f"{Color.ERROR}[error]: {e}{Color.RESET}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
