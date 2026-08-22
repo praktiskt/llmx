@@ -104,7 +104,10 @@ class AsyncHttp:
     @classmethod
     async def head(cls, url: str) -> Response:
         return await cls._request(
-            "HEAD", url, timeout=5, headers={"User-Agent": "Mozilla/5.0"}
+            "HEAD",
+            url,
+            timeout=Config.HEAD_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0"},
         )
 
 
@@ -153,6 +156,10 @@ class Config:
     CONTENT_THRESHOLD = 5000
     MAX_TOOL_RESULT_CHARS = 8000
     GREP_MAX_MATCHES = 50
+    LLM_TIMEOUT = 60
+    FETCH_TIMEOUT = 30
+    SEARCH_TIMEOUT = 10
+    HEAD_TIMEOUT = 5
 
     @staticmethod
     def response_format():
@@ -611,7 +618,9 @@ class Tools:
         last_error = None
         for attempt in range(3):
             try:
-                response = await AsyncHttp.get(fetch_url, timeout=30, headers=headers)
+                response = await AsyncHttp.get(
+                    fetch_url, timeout=Config.FETCH_TIMEOUT, headers=headers
+                )
                 if response.status_code == 200:
                     return store_and_return(response.text)
                 return f"fetch failed (status {response.status_code})"
@@ -647,7 +656,9 @@ class Tools:
 
         try:
             response = await AsyncHttp.get(
-                url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+                url,
+                timeout=Config.SEARCH_TIMEOUT,
+                headers={"User-Agent": "Mozilla/5.0"},
             )
             response.raise_for_status()
             if proxy:
@@ -720,7 +731,9 @@ class Tools:
             url = f"{proxy.rstrip('/')}/{quote(query)}"
             for attempt in range(3):
                 try:
-                    response = await AsyncHttp.get(url, timeout=10, headers=headers)
+                    response = await AsyncHttp.get(
+                        url, timeout=Config.SEARCH_TIMEOUT, headers=headers
+                    )
                     response.raise_for_status()
                     return response.text.strip()
                 except Exception:
@@ -742,7 +755,9 @@ class Tools:
         url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
         for attempt in range(3):
             try:
-                response = await AsyncHttp.get(url, timeout=10, headers=headers)
+                response = await AsyncHttp.get(
+                    url, timeout=Config.SEARCH_TIMEOUT, headers=headers
+                )
                 response.raise_for_status()
 
                 parser = DuckDuckGoLiteSearch()
@@ -838,7 +853,7 @@ class Tools:
                         os.environ["LLM_HOST"],
                         headers=headers,
                         json=payload,
-                        timeout=60,
+                        timeout=Config.LLM_TIMEOUT,
                     )
                     last_error = None
                     break
@@ -1143,7 +1158,7 @@ class LLMClient:
                         headers=headers,
                         data=json.dumps(msg),
                         stream=Config.is_stream(),
-                        timeout=60,
+                        timeout=Config.LLM_TIMEOUT,
                     )
                 except Exception as e:
                     Log.stderr(
