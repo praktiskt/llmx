@@ -1043,30 +1043,40 @@ class LLMClient:
         while True:
             msg = LLMClient.body(messages=messages)
 
-            response = await AsyncHttp.post(
-                os.environ["LLM_HOST"],
-                headers=headers,
-                data=json.dumps(msg),
-                stream=Config.is_stream(),
-                timeout=60,
-            )
+            response = None
+            for attempt in range(5):
+                try:
+                    response = await AsyncHttp.post(
+                        os.environ["LLM_HOST"],
+                        headers=headers,
+                        data=json.dumps(msg),
+                        stream=Config.is_stream(),
+                        timeout=60,
+                    )
+                except Exception as e:
+                    Log.stderr(
+                        f"{Color.ERROR}[error]: attempt {attempt + 1}/5 failed: {e}{Color.RESET}"
+                    )
+                    continue
 
-            if response.status_code in (408, 429) or response.status_code >= 500:
+                if response.status_code == 200:
+                    break
+
                 Log.stderr(
-                    f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}, retrying{Color.RESET}"
-                )
-                await asyncio.sleep(1)
-                response = await AsyncHttp.post(
-                    os.environ["LLM_HOST"],
-                    headers=headers,
-                    data=json.dumps(msg),
-                    stream=False,
-                    timeout=60,
+                    f"{Color.ERROR}[error]: API {response.status_code} (attempt {attempt + 1}/5): "
+                    f"{response.content.decode(errors='replace')[:200]}, retrying{Color.RESET}"
                 )
 
-            if response.status_code != 200:
+            if response is None or response.status_code != 200:
+                status = response.status_code if response else "no response"
+                body = (
+                    response.content.decode(errors="replace")[:500]
+                    if response
+                    else "all attempts raised"
+                )
                 Log.stderr(
-                    f"{Color.ERROR}[error]: {response.status_code}: {response.content.decode()}{Color.RESET}"
+                    f"{Color.ERROR}[error]: API request failed after 5 attempts "
+                    f"(last status: {status}): {body}{Color.RESET}"
                 )
                 sys.exit(1)
 
