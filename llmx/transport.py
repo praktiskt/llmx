@@ -1,8 +1,14 @@
 import asyncio
+import http.client
+import io
 import json
-import urllib.error
-import urllib.request
+import threading
 from collections.abc import Awaitable, Callable
+from urllib.parse import urljoin, urlparse
+
+DEFAULT_USER_AGENT = "Mozilla/5.0"
+
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
 class LLMAPIError(RuntimeError):
@@ -60,11 +66,45 @@ async def request_with_retries(
     return last_response
 
 
+class _PooledStream:
+    """Wraps an HTTPResponse whose connection returns to the pool on close."""
+
+    def __init__(
+        self, conn: http.client.HTTPConnection, resp: http.client.HTTPResponse
+    ):
+        self._conn = conn
+        self._resp = resp
+        self.status = resp.status
+
+    def read(self) -> bytes:
+        return self._resp.read()
+
+    def __iter__(self):
+        return iter(self._resp)
+
+    def close(self) -> None:
+        try:
+            keep_alive = not self._resp.will_close and self._conn.sock is not None
+            self._resp.close()
+        except Exception:
+            keep_alive = False
+        if keep_alive:
+            _release_connection(self._conn)
+        else:
+            self._conn.close()
+
+
 class Response:
-    def __init__(self, fp, preloaded: bytes | None = None):
+    def __init__(
+        self, fp, preloaded: bytes | None = None, status_code: int | None = None
+    ):
         self._fp = fp
         self._content = preloaded
-        self.status_code = getattr(fp, "status", None) or getattr(fp, "code", 0)
+        self.status_code = (
+            status_code
+            if status_code is not None
+            else getattr(fp, "status", None) or getattr(fp, "code", 0)
+        )
         self.encoding: str | None = None
 
     @property
@@ -97,37 +137,113 @@ class Response:
         self._fp.close()
 
 
+_pool: dict[tuple[str, str, int], list[http.client.HTTPConnection]] = {}
+_pool_lock = threading.Lock()
+
+
+def _checkout_connection(scheme: str, host: str, port: int, timeout: float | None):
+    key = (scheme, host, port)
+    with _pool_lock:
+        idle = _pool.get(key)
+        if idle:
+            conn = idle.pop()
+            conn.timeout = timeout
+            return conn
+    if scheme == "https":
+        return http.client.HTTPSConnection(host, port=port, timeout=timeout)
+    return http.client.HTTPConnection(host, port=port, timeout=timeout)
+
+
+def _release_connection(conn: http.client.HTTPConnection) -> None:
+    key = (conn._llmx_scheme, conn.host, conn.port)  # type: ignore[attr-defined]
+    with _pool_lock:
+        idle = _pool.setdefault(key, [])
+        if len(idle) < 8:
+            idle.append(conn)
+            return
+    conn.close()
+
+
+def _discard_connection(conn: http.client.HTTPConnection) -> None:
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _sync_request(method: str, url: str, **kwargs):
+    parsed = urlparse(url)
+
+    headers = {"User-Agent": DEFAULT_USER_AGENT}
+    headers.update(kwargs.get("headers") or {})
+
+    body = kwargs.get("data")
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    payload = kwargs.get("json")
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers.setdefault("Content-Type", "application/json")
+
+    timeout = kwargs.get("timeout")
+    stream = bool(kwargs.get("stream"))
+    max_redirects = 5
+
+    for _ in range(max_redirects + 1):
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+
+        conn = _checkout_connection(parsed.scheme, host, port, timeout)
+        conn._llmx_scheme = parsed.scheme  # type: ignore[attr-defined]
+        try:
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            raw_headers = resp.headers
+
+            if resp.status in _REDIRECT_STATUSES and "location" in raw_headers:
+                location = raw_headers["location"]
+                next_url = urljoin(url, location)
+                resp.read()
+                _discard_or_release(conn, resp)
+                parsed, url = urlparse(next_url), next_url
+                if resp.status in (303, 301, 302):
+                    method, body = "GET", None
+                continue
+
+            if stream:
+                return Response(_PooledStream(conn, resp), status_code=resp.status)
+
+            data = resp.read()
+            status = resp.status
+            _discard_or_release(conn, resp)
+            return Response(io.BytesIO(data), data, status_code=status)
+        except Exception:
+            _discard_connection(conn)
+            raise
+
+    raise RuntimeError(f"Too many redirects requesting {url}")
+
+
+def _discard_or_release(
+    conn: http.client.HTTPConnection, resp: http.client.HTTPResponse
+):
+    try:
+        keep_alive = not resp.will_close and conn.sock is not None
+    except Exception:
+        keep_alive = False
+    if keep_alive:
+        _release_connection(conn)
+    else:
+        _discard_connection(conn)
+
+
 class AsyncHttp:
     @staticmethod
     async def _request(method: str, url: str, **kwargs) -> Response:
-        def do() -> Response:
-            headers = dict(kwargs.get("headers") or {})
-            body = kwargs.get("data")
-            if isinstance(body, str):
-                body = body.encode("utf-8")
-            payload = kwargs.get("json")
-            if payload is not None:
-                body = json.dumps(payload).encode("utf-8")
-                headers.setdefault("Content-Type", "application/json")
-            req = urllib.request.Request(
-                url,
-                data=body,
-                headers={"User-Agent": "Mozilla/5.0", **headers},
-                method=method,
-            )
-            try:
-                fp = urllib.request.urlopen(req, timeout=kwargs.get("timeout"))
-                if kwargs.get("stream"):
-                    return Response(fp)
-                content = fp.read()
-                fp.close()
-                return Response(fp, content)
-            except urllib.error.HTTPError as e:
-                if kwargs.get("stream"):
-                    return Response(e)
-                return Response(e, e.read())
-
-        return await asyncio.to_thread(do)
+        return await asyncio.to_thread(_sync_request, method, url, **kwargs)
 
     @classmethod
     async def get(cls, url: str, **kwargs) -> Response:
