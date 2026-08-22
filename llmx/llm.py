@@ -12,6 +12,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
@@ -251,7 +252,8 @@ class DuckDuckGoLiteSearch(HTMLParser):
 
 
 class Cache:
-    _storage: dict[str, str] = {}
+    MAX_ENTRIES = 50
+    _storage: OrderedDict[str, str] = OrderedDict()
 
     @staticmethod
     def store(file_id: str, content: str) -> None:
@@ -273,10 +275,16 @@ class Cache:
                         wrapped_lines.append(line[start : start + 200])
                         break
         Cache._storage[file_id] = "\n".join(wrapped_lines)
+        Cache._storage.move_to_end(file_id)
+        while len(Cache._storage) > Cache.MAX_ENTRIES:
+            Cache._storage.popitem(last=False)
 
     @staticmethod
     def get(file_id: str) -> str | None:
-        return Cache._storage.get(file_id)
+        content = Cache._storage.get(file_id)
+        if content is not None:
+            Cache._storage.move_to_end(file_id)
+        return content
 
     @staticmethod
     def read(
