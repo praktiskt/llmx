@@ -987,53 +987,64 @@ class Tools:
         return Tools._unwrap_args(args)
 
     @staticmethod
+    def _as_list(value) -> list:
+        if isinstance(value, str):
+            return [value]
+        return value
+
+    @staticmethod
+    async def _exec_fetch(args: dict) -> str:
+        return await Tools.fetch(Tools._as_list(args.get("urls", [])))
+
+    @staticmethod
+    async def _exec_search(args: dict) -> str:
+        return await Tools.search(
+            Tools._as_list(args.get("queries", [])),
+            args.get("max_results", 5),
+            args.get("images_only", False),
+        )
+
+    @staticmethod
+    async def _exec_read_file(args: dict) -> str:
+        return Cache.read(
+            Tools._as_list(args.get("file_ids", [])),
+            args.get("offset"),
+            args.get("limit"),
+        )
+
+    @staticmethod
+    async def _exec_summarize(args: dict) -> str:
+        return await Tools.summarize(
+            Tools._as_list(args.get("file_ids", [])),
+            Tools._as_list(args.get("directives", [])),
+            args.get("max_length", 1000),
+            args.get("offset"),
+            args.get("limit"),
+        )
+
+    @staticmethod
+    async def _exec_grep_file(args: dict) -> str:
+        return Cache.grep(
+            Tools._as_list(args.get("file_ids", [])),
+            args.get("pattern", ""),
+            args.get("is_regex", False),
+            args.get("ignore_case", False),
+            args.get("context", 0),
+        )
+
+    @staticmethod
     async def execute(tool_name: str, tool_args: dict) -> str:
-        if tool_name == "fetch":
-            urls = tool_args.get("urls", [])
-            if isinstance(urls, str):
-                urls = [urls]
-            return await Tools.fetch(urls)
-        if tool_name == "search":
-            queries = tool_args.get("queries", [])
-            if isinstance(queries, str):
-                queries = [queries]
-            return await Tools.search(
-                queries,
-                tool_args.get("max_results", 5),
-                tool_args.get("images_only", False),
-            )
-        if tool_name == "read_file":
-            file_ids = tool_args.get("file_ids", [])
-            if isinstance(file_ids, str):
-                file_ids = [file_ids]
-            return Cache.read(
-                file_ids,
-                tool_args.get("offset"),
-                tool_args.get("limit"),
-            )
-        if tool_name == "summarize":
-            file_ids = tool_args.get("file_ids", [])
-            if isinstance(file_ids, str):
-                file_ids = [file_ids]
-            return await Tools.summarize(
-                file_ids,
-                tool_args.get("directives", []),
-                tool_args.get("max_length", 1000),
-                tool_args.get("offset"),
-                tool_args.get("limit"),
-            )
-        if tool_name == "grep_file":
-            file_ids = tool_args.get("file_ids", [])
-            if isinstance(file_ids, str):
-                file_ids = [file_ids]
-            return Cache.grep(
-                file_ids,
-                tool_args.get("pattern", ""),
-                tool_args.get("is_regex", False),
-                tool_args.get("ignore_case", False),
-                tool_args.get("context", 0),
-            )
-        return f"Unknown tool: {tool_name}"
+        handlers = {
+            "fetch": Tools._exec_fetch,
+            "search": Tools._exec_search,
+            "read_file": Tools._exec_read_file,
+            "summarize": Tools._exec_summarize,
+            "grep_file": Tools._exec_grep_file,
+        }
+        handler = handlers.get(tool_name)
+        if handler is None:
+            return f"Unknown tool: {tool_name}"
+        return await handler(tool_args)
 
     @staticmethod
     async def execute_wrapper(tool_call: dict) -> tuple[str, str]:
