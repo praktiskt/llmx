@@ -1,0 +1,227 @@
+import asyncio
+import unittest
+
+from llmx.cache import Cache
+from llmx.config import Config
+from llmx.tools import _repair_json, parse_tool_args
+from llmx.transport import Response, request_with_retries
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+class FakeResponse:
+    def __init__(self, status_code=200):
+        self.status_code = status_code
+
+
+class RepairJsonTest(unittest.TestCase):
+    def test_valid_json_untouched(self):
+        s = '{"a": "b", "c": [1, 2]}'
+        self.assertEqual(_repair_json(s), s)
+
+    def test_inner_quotes_escaped(self):
+        s = '{"a": "say "hi" now", "b": 1}'
+        import json
+
+        self.assertEqual(json.loads(_repair_json(s)), {"a": 'say "hi" now', "b": 1})
+
+
+class ParseToolArgsTest(unittest.TestCase):
+    def test_valid(self):
+        self.assertEqual(
+            parse_tool_args('{"urls": ["https://x"]}'), {"urls": ["https://x"]}
+        )
+
+    def test_broken_json_returns_empty(self):
+        self.assertEqual(parse_tool_args("not json at all {"), {})
+
+    def test_string_encoded_list_unwrapped(self):
+        result = parse_tool_args('{"file_ids": "[\\"abc123\\"]"}')
+        self.assertEqual(result["file_ids"], ["abc123"])
+
+
+class ValidateFileIdTest(unittest.TestCase):
+    def test_ok(self):
+        self.assertIsNone(Config.validate_file_id("abc123"))
+
+    def test_bad_chars(self):
+        err = Config.validate_file_id("ABC123")
+        self.assertIsNotNone(err)
+
+    def test_empty(self):
+        err = Config.validate_file_id("")
+        self.assertIsNotNone(err)
+
+
+class CacheTest(unittest.TestCase):
+    def setUp(self):
+        Cache._storage.clear()
+
+    def test_store_read_roundtrip(self):
+        Cache.store("abc123", "line1\nline2")
+        self.assertIn("line1", Cache.read(["abc123"]))
+
+    def test_wraps_long_lines(self):
+        Cache.store("abc123", "x" * 500)
+        content = Cache.get("abc123")
+        self.assertTrue(all(len(line) <= 200 for line in content.splitlines()))
+
+    def test_lru_eviction(self):
+        for i in range(60):
+            Cache.store(f"id{i:03d}", "data")
+        self.assertEqual(len(Cache._storage), Cache.MAX_ENTRIES)
+        self.assertNotIn("id000", Cache._storage)
+        self.assertIn("id059", Cache._storage)
+
+    def test_get_touches_lru(self):
+        for i in range(50):
+            Cache.store(f"id{i:03d}", "data")
+        Cache.get("id000")
+        Cache.store("zzzzzz", "new")
+        self.assertIn("id000", Cache._storage)
+        self.assertNotIn("id001", Cache._storage)
+
+    def test_new_id_unique(self):
+        ids = {Cache.new_id() for _ in range(100)}
+        self.assertEqual(len(ids), 100)
+
+    def test_read_offset_limit(self):
+        Cache.store("abc123", "\n".join(str(i) for i in range(100)))
+        out = Cache.read(["abc123"], offset=10, limit=5)
+        lines = [ln for ln in out.splitlines() if ": " in ln and ln[0].isdigit()]
+        self.assertEqual(lines[0], "10: 9")
+        self.assertEqual(len(lines), 5)
+        self.assertIn("lines 10-14 of 100", out)
+
+    def test_read_missing_file(self):
+        self.assertIn("not found", Cache.read(["zzz999"]))
+
+    def test_grep_literal_and_context(self):
+        Cache.store("abc123", "alpha\nbeta match\ngamma\nbeta again\ndelta")
+        out = Cache.grep(["abc123"], "beta", context=0)
+        self.assertIn("2 matches", out)
+        out = Cache.grep(["abc123"], "beta", context=1)
+        self.assertIn("alpha", out)
+        self.assertIn("gamma", out)
+
+    def test_grep_regex_and_ignore_case(self):
+        Cache.store("abc123", "Hello\nworld\nHELLO")
+        out = Cache.grep(["abc123"], "^hello$", is_regex=True)
+        self.assertIn("no matches", out.lower())
+        out = Cache.grep(["abc123"], "^hello$", is_regex=True, ignore_case=True)
+        self.assertIn("2 matches", out)
+
+
+class _FakeFP:
+    def __init__(self, status=200, body=b"", lines=None):
+        self.status = status
+        self.code = status
+        self._body = body
+        self._lines = lines or []
+
+    def read(self):
+        return self._body
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def close(self):
+        pass
+
+
+class ResponseTest(unittest.TestCase):
+    def test_status_from_fp(self):
+        r = Response(_FakeFP(status=201), b"data")
+        self.assertEqual(r.status_code, 201)
+
+    def test_text_decode(self):
+        r = Response(_FakeFP(), "héllo".encode())
+        self.assertEqual(r.text, "héllo")
+
+    def test_raise_for_status(self):
+        r = Response(_FakeFP(status=404), b"x")
+        with self.assertRaises(RuntimeError):
+            r.raise_for_status()
+        ok = Response(_FakeFP(status=200), b"x")
+        ok.raise_for_status()
+
+    def test_iter_lines_strips_newlines(self):
+        r = Response(_FakeFP(lines=[b"a\n", b"b\r\n", b"c"]))
+        self.assertEqual(list(r.iter_lines(decode_unicode=True)), ["a", "b", "c"])
+
+
+class RequestWithRetriesTest(unittest.TestCase):
+    def test_success_first_try(self):
+        calls = []
+
+        async def send():
+            calls.append(1)
+            return FakeResponse(200)
+
+        resp = run(request_with_retries(send))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(calls), 1)
+
+    def test_retries_then_succeeds(self):
+        seq = [FakeResponse(503), FakeResponse(200)]
+
+        async def send():
+            return seq.pop(0)
+
+        retries = []
+        resp = run(
+            request_with_retries(
+                send,
+                attempts=3,
+                on_retry=lambda a, r: retries.append((a, r.status_code)),
+            )
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(retries, [(1, 503)])
+
+    def test_exhaustion_returns_last_response(self):
+        async def send():
+            return FakeResponse(500)
+
+        resp = run(request_with_retries(send, attempts=3))
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp.status_code, 500)
+
+    def test_all_exceptions_returns_none(self):
+        async def send():
+            raise OSError("boom")
+
+        resp = run(request_with_retries(send, attempts=2))
+        self.assertIsNone(resp)
+
+    def test_non_retriable_returned_immediately(self):
+        calls = []
+
+        async def send():
+            calls.append(1)
+            return FakeResponse(400)
+
+        resp = run(request_with_retries(send, attempts=5, retriable=lambda r: False))
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(len(calls), 1)
+
+    def test_delay_between_attempts(self):
+        import time
+
+        attempts = []
+
+        async def send():
+            attempts.append(time.monotonic())
+            if len(attempts) < 3:
+                return FakeResponse(500)
+            return FakeResponse(200)
+
+        run(request_with_retries(send, attempts=3, delay=0.05))
+        self.assertGreaterEqual(attempts[1] - attempts[0], 0.04)
+        self.assertGreaterEqual(attempts[2] - attempts[1], 0.09)
+
+
+if __name__ == "__main__":
+    unittest.main()
