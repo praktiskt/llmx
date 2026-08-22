@@ -1087,7 +1087,7 @@ class LLMClient:
                             f"{Color.dim('[thinking]')} {Color.thinking(reasoning)}"
                         )
 
-            tool_calls = message.get("tool_calls", [])
+            tool_calls = message.get("tool_calls") or []
             if not tool_calls or not Config.tools_enabled():
                 content = message.get("content", "")
                 if content and not printed:
@@ -1195,7 +1195,7 @@ class LLMClient:
                 if choice.get("message"):
                     final_message = choice["message"]
 
-                delta = choice.get("delta", {})
+                delta = choice.get("delta") or {}
                 reasoning = (
                     delta.get("reasoning_content") or delta.get("reasoning") or ""
                 )
@@ -1206,7 +1206,7 @@ class LLMClient:
                 if content:
                     append_content(content)
 
-                for tc in delta.get("tool_calls", []):
+                for tc in delta.get("tool_calls") or []:
                     index = tc.get("index", 0)
                     entry = tool_calls.setdefault(
                         index,
