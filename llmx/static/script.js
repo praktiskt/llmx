@@ -96,6 +96,12 @@ function addMessage(content, type = 'assistant') {
     div.className = `message ${type}`;
     div.innerHTML = content;
     chat.appendChild(div);
+    wireImages(div);
+    const last = chat.lastElementChild;
+    if (last) last.scrollIntoView({block: 'nearest', behavior: 'auto'});
+}
+
+function wireImages(div) {
     for (const img of div.querySelectorAll('img')) {
         img.addEventListener('click', e => {
             imageModal.innerHTML = '';
@@ -105,6 +111,9 @@ function addMessage(content, type = 'assistant') {
             imageModal.classList.add('active');
         });
     }
+}
+
+function scrollChat() {
     const last = chat.lastElementChild;
     if (last) last.scrollIntoView({block: 'nearest', behavior: 'auto'});
 }
@@ -210,9 +219,37 @@ async function send() {
 function handleEvent(event) {
     const type = event.type;
     const content = event.content || '';
-    
+
     if (type === 'thinking') {
         addMessage(content, 'thinking');
+    } else if (type === 'thinking_delta') {
+        let el = chat.querySelector('.message.thinking:last-child');
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'message thinking';
+            chat.appendChild(el);
+        }
+        el.insertAdjacentHTML('beforeend', content);
+        scrollChat();
+    } else if (type === 'message_delta') {
+        let el = chat.querySelector('.message.assistant-raw:last-child');
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'message assistant assistant-raw';
+            chat.appendChild(el);
+        }
+        el.insertAdjacentHTML('beforeend', content);
+        scrollChat();
+    } else if (type === 'message_final') {
+        const el = chat.querySelector('.message.assistant-raw:last-child');
+        if (el) {
+            el.classList.remove('assistant-raw');
+            el.innerHTML = content;
+            wireImages(el);
+            scrollChat();
+        } else {
+            addMessage(content, 'assistant');
+        }
     } else if (type === 'tool_call') {
         addMessage(content, 'tool-call');
     } else if (type === 'tool_result') {

@@ -340,6 +340,34 @@ async def post_chat(request: Request, session_id: str | None = None):
 _DETERMINISTIC_ERRORS = (TypeError, ValueError, KeyError, AttributeError)
 
 
+class _ErrorBody:
+    """Non-200 response whose body was already read; feeds retry logging."""
+
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.text = text
+
+    async def aclose(self) -> None:
+        pass
+
+
+class _StreamHandle:
+    """Open streaming 200 response; SSE consumed via aiter_lines()."""
+
+    status_code = 200
+    text = ""
+
+    def __init__(self, resp):
+        self.resp = resp
+
+    async def aiter_lines(self):
+        async for line in self.resp.aiter_lines():
+            yield line
+
+    async def aclose(self) -> None:
+        await self.resp.aclose()
+
+
 async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str, str]:
     tool_id = tool_call.get("id", "")
     func = tool_call.get("function", {})
@@ -387,17 +415,28 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
     max_iterations = 100
 
     client = get_http_client()
+
+    def _sse(event: dict) -> str:
+        return "data: " + json.dumps(event) + "\n\n"
+
     for _ in range(max_iterations):
         session.messages = truncate_history(session.messages)
         payload = LLMClient.body(session.messages)
-        payload["stream"] = False
+        payload["stream"] = True
 
         async def post_once(payload=payload):
-            return await client.post(
+            req = client.build_request(
+                "POST",
                 os.environ["LLM_HOST"],
                 headers=headers,
                 json=payload,
             )
+            httpx_resp = await client.send(req, stream=True)
+            if httpx_resp.status_code >= 400:
+                body = (await httpx_resp.aread()).decode(errors="replace")
+                await httpx_resp.aclose()
+                return _ErrorBody(httpx_resp.status_code, body)
+            return _StreamHandle(httpx_resp)
 
         response = await request_with_retries(
             post_once,
@@ -440,34 +479,87 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
             )
             return
 
-        data = response.json()
-        choice = data.get("choices", [{}])[0]
-        message = choice.get("message", {})
+        reasoning_parts = []
+        content_parts = []
+        streamed_tool_calls: dict[int, dict] = {}
+        final_message = None
 
-        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
-        if reasoning:
-            escaped_reasoning = html.escape(reasoning)
-            content_val = (
-                f"<span class='thinking-header'>thinking</span>{escaped_reasoning}"
-            )
-            yield f"data: {json.dumps({'type': 'thinking', 'content': content_val})}\n\n"
+        try:
+            async for line in response.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                chunk_data = line[5:].strip()
+                if chunk_data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(chunk_data)
+                except json.JSONDecodeError:
+                    continue
 
-        tool_calls = message.get("tool_calls", [])
-        if not tool_calls or not Config.tools_enabled():
-            content = message.get("content", "")
+                choices = chunk.get("choices")
+                if not choices:
+                    if chunk.get("message"):
+                        final_message = chunk["message"]
+                    continue
+                choice = choices[0]
+                if choice.get("message"):
+                    final_message = choice["message"]
+
+                delta = choice.get("delta") or {}
+                r = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                if r:
+                    reasoning_parts.append(r)
+                    yield _sse({"type": "thinking_delta", "content": html.escape(r)})
+                c = delta.get("content") or ""
+                if c:
+                    content_parts.append(c)
+                    yield _sse({"type": "message_delta", "content": html.escape(c)})
+
+                for tc in delta.get("tool_calls") or []:
+                    index = tc.get("index", 0)
+                    entry = streamed_tool_calls.setdefault(
+                        index,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    entry["id"] = tc.get("id") or entry["id"] or f"call_{index}"
+                    fn = tc.get("function", {})
+                    entry["function"]["name"] += fn.get("name", "") or ""
+                    entry["function"]["arguments"] += fn.get("arguments", "") or ""
+        finally:
+            await response.aclose()
+
+        reasoning = "".join(reasoning_parts)
+        content = "".join(content_parts)
+
+        if not streamed_tool_calls:
+            if not content and not reasoning and final_message:
+                message = dict(final_message)
+            else:
+                message = {"role": "assistant", "content": content}
+            session.messages.append({**message, "reasoning": reasoning})
             if content:
-                yield f"data: {json.dumps({'type': 'message', 'content': format_message(content)})}\n\n"
-                session.messages.append(
-                    {"role": "assistant", "content": content, "reasoning": reasoning}
+                yield _sse(
+                    {"type": "message_final", "content": format_message(content)}
                 )
+            elif not reasoning:
+                logger.warning("Model returned empty response (no content/reasoning)")
             return
 
-        message.pop("reasoning_content", None)
-        message.pop("provider_specific_fields", None)
-        session.messages.append({**message, "reasoning": reasoning})
+        assistant: dict = {
+            "role": "assistant",
+            "content": content or None,
+            "tool_calls": [streamed_tool_calls[i] for i in sorted(streamed_tool_calls)],
+        }
+        if reasoning:
+            assistant["reasoning"] = reasoning
+        session.messages.append(assistant)
 
         parsed_calls = []
-        for tool_call in tool_calls:
+        for tool_call in assistant["tool_calls"]:
             func = tool_call.get("function", {})
             tool_name = func.get("name", "unknown")
             try:
