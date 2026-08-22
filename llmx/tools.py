@@ -158,7 +158,7 @@ async def summarize(
 
         try:
             summary = response.json()["choices"][0]["message"]["content"] or ""
-        except KeyError, IndexError, TypeError, ValueError:
+        except (KeyError, IndexError, TypeError, ValueError):
             logger.error(
                 "Summarize got malformed response for file %s: %.200s",
                 file_id,
