@@ -21,7 +21,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .llm import Config, Tools
+from .config import Config
+from .tools import Tools
 
 STATIC_DIR = Path(__file__).parent / "static"
 
