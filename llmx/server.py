@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import html
 import json
 import logging
@@ -233,31 +234,41 @@ def get_session_id_from_cookie(request: Request) -> str | None:
     return None
 
 
+@functools.cache
+def _static_html(name: str) -> str:
+    return (STATIC_DIR / name).read_text()
+
+
+_MD_PLUGINS = [
+    "strikethrough",
+    "footnotes",
+    "table",
+    "url",
+    "task_lists",
+    "def_list",
+    "abbr",
+    "mark",
+    "insert",
+    "superscript",
+    "subscript",
+    "math",
+    "ruby",
+    "spoiler",
+]
+
+_MD_CONVERTERS = {
+    escape: mistune.create_markdown(escape=escape, plugins=_MD_PLUGINS)
+    for escape in (False, True)
+}
+
+
 def format_message(content: str) -> str:
     content = content.rstrip()
     content = re.sub(r"•\s*", "- ", content)
 
     has_backticks = "```" in content
-    md = mistune.create_markdown(
-        escape=has_backticks,
-        plugins=[
-            "strikethrough",
-            "footnotes",
-            "table",
-            "url",
-            "task_lists",
-            "def_list",
-            "abbr",
-            "mark",
-            "insert",
-            "superscript",
-            "subscript",
-            "math",
-            "ruby",
-            "spoiler",
-        ],
-    )
-    content = md(content)  # type: ignore[assignment]
+    md = _MD_CONVERTERS[has_backticks]
+    content = md(content)
     content = content.replace("<a href=", '<a target="_blank" href=')
     content = re.sub(r"(<table>)", r"<div style='overflow-x:auto'>\1", content)
     content = re.sub(r"(</table>)", r"\1</div>", content)
@@ -267,8 +278,7 @@ def format_message(content: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
-    html_path = STATIC_DIR / "landing.html"
-    return HTMLResponse(content=html_path.read_text())
+    return HTMLResponse(content=_static_html("landing.html"))
 
 
 @app.get("/new-session", response_class=HTMLResponse)
@@ -279,8 +289,7 @@ async def new_session():
 
 @app.get("/{session_id}", response_class=HTMLResponse)
 async def get_session_page(session_id: str):
-    html_path = STATIC_DIR / "index.html"
-    return HTMLResponse(content=html_path.read_text())
+    return HTMLResponse(content=_static_html("index.html"))
 
 
 @app.get("/session/{session_id}/messages")
