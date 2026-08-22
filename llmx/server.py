@@ -328,6 +328,9 @@ async def post_chat(request: Request, session_id: str | None = None):
     )
 
 
+_DETERMINISTIC_ERRORS = (TypeError, ValueError, KeyError, AttributeError)
+
+
 async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str, str]:
     tool_id = tool_call.get("id", "")
     func = tool_call.get("function", {})
@@ -336,6 +339,18 @@ async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str
     for attempt in range(max_retries):
         try:
             return await Tools.execute_wrapper(tool_call)
+        except _DETERMINISTIC_ERRORS as e:
+            logger.error(
+                "Tool '%s' failed deterministically (no retry): %s: %s\n%s",
+                tool_name,
+                type(e).__name__,
+                e,
+                traceback.format_exc(),
+            )
+            return (
+                tool_id,
+                f"Error: {tool_name} failed: {type(e).__name__}: {e}",
+            )
         except Exception as e:
             if attempt < max_retries - 1:
                 logger.warning(

@@ -353,5 +353,52 @@ class SessionStoreTest(unittest.TestCase):
             srv.sessions.clear()
 
 
+class ExecuteWithRetryTest(unittest.TestCase):
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_deterministic_error_no_retry(self):
+        import llmx.server as srv
+
+        calls = []
+
+        async def boom(tool_call):
+            calls.append(1)
+            raise ValueError("bad args")
+
+        orig = srv.Tools.execute_wrapper
+        srv.Tools.execute_wrapper = staticmethod(boom)
+        try:
+            tool_id, result = self._run(
+                srv.execute_with_retry({"id": "t1", "function": {"name": "fetch"}})
+            )
+        finally:
+            srv.Tools.execute_wrapper = staticmethod(orig)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("ValueError", result)
+
+    def test_transient_error_retries(self):
+        import llmx.server as srv
+
+        calls = []
+
+        async def flaky(tool_call):
+            calls.append(1)
+            if len(calls) < 3:
+                raise OSError("network down")
+            return ("t1", "fine")
+
+        orig = srv.Tools.execute_wrapper
+        srv.Tools.execute_wrapper = staticmethod(flaky)
+        try:
+            tool_id, result = self._run(
+                srv.execute_with_retry({"id": "t1", "function": {"name": "fetch"}})
+            )
+        finally:
+            srv.Tools.execute_wrapper = staticmethod(orig)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(result, "fine")
+
+
 if __name__ == "__main__":
     unittest.main()
