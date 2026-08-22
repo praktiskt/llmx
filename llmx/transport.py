@@ -18,11 +18,15 @@ async def request_with_retries(
     retriable: Callable[[Response], bool] | None = None,
     on_exception: Callable[[int, Exception], None] | None = None,
     on_retry: Callable[[int, Response], None] | None = None,
+    fail_fast: bool = False,
 ) -> Response | None:
     """Run send() up to `attempts` times.
 
     Returns the final Response (200, non-retriable, or exhausted retries), or
     None if every attempt raised an exception. Sleeps delay*attempt between tries.
+
+    With fail_fast, stops retrying when two attempts return the same
+    (status, body-prefix) — a deterministic error will not heal on retry.
     """
     if retriable is None:
 
@@ -30,6 +34,7 @@ async def request_with_retries(
             return response.status_code >= 400
 
     last_response: Response | None = None
+    seen_signatures: set[tuple[int, str]] = set()
     for attempt in range(1, attempts + 1):
         try:
             response = await send()
@@ -41,12 +46,17 @@ async def request_with_retries(
             continue
 
         last_response = response
-        if response.status_code != 200 and retriable(response) and attempt < attempts:
-            if on_retry is not None:
-                on_retry(attempt, response)
-            if delay:
-                await asyncio.sleep(delay * attempt)
-            continue
+        if response.status_code != 200 and retriable(response):
+            signature = (response.status_code, response.text[:120])
+            if fail_fast and signature in seen_signatures:
+                return response
+            seen_signatures.add(signature)
+            if attempt < attempts:
+                if on_retry is not None:
+                    on_retry(attempt, response)
+                if delay:
+                    await asyncio.sleep(delay * attempt)
+                continue
         return response
 
     return last_response

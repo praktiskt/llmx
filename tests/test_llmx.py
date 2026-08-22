@@ -2,6 +2,7 @@ import asyncio
 import unittest
 
 from llmx.cache import Cache
+from llmx.client import truncate_history
 from llmx.config import Config
 from llmx.tools import _repair_json, parse_tool_args
 from llmx.transport import Response, request_with_retries
@@ -14,6 +15,7 @@ def run(coro):
 class FakeResponse:
     def __init__(self, status_code=200):
         self.status_code = status_code
+        self.text = f"body-{status_code}"
 
 
 class RepairJsonTest(unittest.TestCase):
@@ -221,6 +223,82 @@ class RequestWithRetriesTest(unittest.TestCase):
         run(request_with_retries(send, attempts=3, delay=0.05))
         self.assertGreaterEqual(attempts[1] - attempts[0], 0.04)
         self.assertGreaterEqual(attempts[2] - attempts[1], 0.09)
+
+    def test_fail_fast_stops_on_identical_error(self):
+        calls = []
+
+        async def send():
+            calls.append(1)
+            return FakeResponse(422)
+
+        resp = run(request_with_retries(send, attempts=5, fail_fast=True))
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(len(calls), 2)
+
+    def test_fail_fast_ignores_distinct_errors(self):
+        codes = [500, 502, 503]
+
+        async def send():
+            return FakeResponse(codes.pop(0))
+
+        resp = run(request_with_retries(send, attempts=3))
+        self.assertEqual(resp.status_code, 503)
+
+
+class TruncateHistoryTest(unittest.TestCase):
+    def _msg(self, role, content, **kw):
+        m = {"role": role, "content": content}
+        m.update(kw)
+        return m
+
+    def test_short_history_untouched(self):
+        msgs = [self._msg("system", "sys"), self._msg("user", "hi")]
+        self.assertIs(truncate_history(msgs), msgs)
+
+    def test_drops_oldest_turns_first(self):
+        old_limit = Config.MAX_CONTEXT_CHARS
+        Config.MAX_CONTEXT_CHARS = 400
+        try:
+            msgs = [self._msg("system", "sys")]
+            for i in range(10):
+                msgs.append(self._msg("user", f"u{i}" * 40))
+                msgs.append(self._msg("assistant", f"a{i}" * 40))
+            out = truncate_history(msgs)
+            self.assertEqual(out[0], msgs[0])
+            joined = " ".join(m["content"] or "" for m in out[1:])
+            self.assertNotIn("u0", joined)
+            self.assertNotIn("u1", joined)
+            self.assertIn("a9", joined)
+            self.assertTrue(any("truncated" in (m["content"] or "") for m in out))
+        finally:
+            Config.MAX_CONTEXT_CHARS = old_limit
+
+    def test_assistant_tool_group_kept_together(self):
+        old_limit = Config.MAX_CONTEXT_CHARS
+        Config.MAX_CONTEXT_CHARS = 300
+        try:
+            tool_call_msg = self._msg(
+                "assistant",
+                None,
+                tool_calls=[
+                    {"id": "t1", "function": {"name": "fetch", "arguments": "x" * 80}}
+                ],
+            )
+            tool_result = self._msg("tool", "r" * 80, tool_call_id="t1")
+            filler = self._msg("user", "f" * 100)
+            msgs = [
+                self._msg("system", "s"),
+                tool_call_msg,
+                tool_result,
+                filler,
+            ]
+            out = truncate_history(msgs)
+            for i, m in enumerate(out):
+                if m.get("role") == "assistant" and m.get("tool_calls"):
+                    self.assertLess(i, len(out) - 1)
+                    self.assertEqual(out[i + 1].get("role"), "tool")
+        finally:
+            Config.MAX_CONTEXT_CHARS = old_limit
 
 
 if __name__ == "__main__":

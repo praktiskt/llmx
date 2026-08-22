@@ -21,9 +21,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .client import LLMClient
+from .client import LLMClient, truncate_history
 from .config import Config
 from .tools import Tools
+from .transport import request_with_retries
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -349,34 +350,40 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
 
     client = get_http_client()
     for _ in range(max_iterations):
+        session.messages = truncate_history(session.messages)
         payload = LLMClient.body(session.messages)
         payload["stream"] = False
 
-        response = None
-        last_attempt_failed = False
-        for attempt in range(5):
-            try:
-                response = await client.post(
-                    os.environ["LLM_HOST"],
-                    headers=headers,
-                    json=payload,
-                )
-            except httpx.HTTPError:
-                last_attempt_failed = attempt == 4
-                continue
+        async def post_once(payload=payload):
+            return await client.post(
+                os.environ["LLM_HOST"],
+                headers=headers,
+                json=payload,
+            )
 
-            if response.status_code == 200:
-                break
+        response = await request_with_retries(
+            post_once,
+            attempts=5,
+            fail_fast=True,
+            on_exception=lambda a, e: logger.warning(
+                "API attempt %d/5 failed: %s", a, e
+            ),
+            on_retry=lambda a, r: logger.warning(
+                "API error %d (attempt %d/5): %s, retrying...",
+                r.status_code,
+                a,
+                r.text[:200],
+            ),
+        )
 
-            if response.status_code >= 400:
-                last_attempt_failed = attempt == 4
-                logger.warning(
-                    f"API error {response.status_code} (attempt {attempt + 1}/5): {response.text[:200]}, retrying..."
-                )
-                continue
+        if response is None or response.status_code != 200:
+            if response is None:
+                logger.error("API failed after 5 attempts (connection errors)")
+                yield f"data: {json.dumps({'type': 'message', 'content': 'All 5 attempts to my LLM providers timed out. Want me to try again?'})}\n\n"
+                return
 
             logger.error(
-                "API error %d: %s",
+                "API max retries exceeded (last status: %d): %s",
                 response.status_code,
                 response.text[:500],
             )
@@ -393,24 +400,6 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
                 )
                 + "\n\n"
             )
-            return
-
-        if response is None or response.status_code != 200:
-            if last_attempt_failed:
-                session.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "All 5 attempts to my LLM providers timed out. Do you want me to try again?",
-                    }
-                )
-                yield f"data: {json.dumps({'type': 'message', 'content': 'All 5 attempts to my LLM providers timed out. Want me to try again?'})}\n\n"
-                return
-
-            logger.error(
-                "API max retries exceeded (last status: %s)",
-                response.status_code if response else "no response",
-            )
-            yield f"data: {json.dumps({'type': 'message', 'content': 'API Error: Max retries exceeded'})}\n\n"
             return
 
         data = response.json()

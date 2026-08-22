@@ -13,6 +13,7 @@ class Config:
     FETCH_TIMEOUT = 30
     SEARCH_TIMEOUT = 10
     HEAD_TIMEOUT = 5
+    MAX_CONTEXT_CHARS = int(os.environ.get("LLM_MAX_CONTEXT_CHARS", "200000"))
 
     @staticmethod
     def response_format():

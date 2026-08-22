@@ -11,6 +11,46 @@ from .transport import AsyncHttp, LLMAPIError, Response, request_with_retries
 
 _STREAM_EOF = object()
 
+_TRUNCATION_MARKER = "[earlier messages truncated to fit the context window]"
+
+
+def truncate_history(messages: list[dict]) -> list[dict]:
+    """Drop oldest whole turns (assistant+its tool results stay together) until
+    the serialized history fits Config.MAX_CONTEXT_CHARS. System prompt kept."""
+    if len(messages) <= 1:
+        return messages
+    system, rest = messages[0], messages[1:]
+
+    units: list[list[dict]] = []
+    i = 0
+    while i < len(rest):
+        msg = rest[i]
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            j = i + 1
+            while j < len(rest) and rest[j].get("role") == "tool":
+                j += 1
+            units.append(rest[i:j])
+            i = j
+        else:
+            units.append([msg])
+            i += 1
+
+    def size(unit: list[dict] | dict) -> int:
+        return len(json.dumps(unit, default=str))
+
+    total = size(system) + sum(size(u) for u in units)
+    if total <= Config.MAX_CONTEXT_CHARS:
+        return messages
+
+    while units and total > Config.MAX_CONTEXT_CHARS:
+        total -= size(units.pop(0))
+
+    return [
+        system,
+        {"role": "user", "content": _TRUNCATION_MARKER},
+        *[m for unit in units for m in unit],
+    ]
+
 
 class LLMClient:
     @staticmethod
@@ -49,6 +89,7 @@ class LLMClient:
         }
 
         while True:
+            messages = truncate_history(messages)
             msg = LLMClient.body(messages=messages)
 
             def send(msg=msg) -> Awaitable[Response]:
