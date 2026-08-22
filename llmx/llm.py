@@ -829,18 +829,25 @@ class Tools:
     async def search(
         queries: list[str], max_results: int = 5, images_only: bool = False
     ) -> str:
-        async def search_task(query: str) -> tuple[str, str]:
+        async def search_task(query: str) -> tuple[str, str | None]:
             if images_only:
                 result = await Tools._search_images(query, max_results)
             else:
                 result = await Tools._run_search(query, max_results)
+            if result.startswith(("Search failed", "Image search failed")):
+                return (query, None)
             file_id = Cache.new_id()
             Cache.store(file_id, result)
             return (query, file_id)
 
-        file_ids = await asyncio.gather(*(search_task(query) for query in queries))
+        results = await asyncio.gather(*(search_task(query) for query in queries))
 
-        lines = [f"Query '{q}' stored in file_id={fid}" for q, fid in file_ids]
+        lines = []
+        for q, fid in results:
+            if fid is None:
+                lines.append(f"Query '{q}': search failed, do not read_file this query")
+            else:
+                lines.append(f"Query '{q}' stored in file_id={fid}")
         lines.append("")
         lines.append("Use read_file, grep_file or summarize to get the content.")
         return "\n".join(lines)
