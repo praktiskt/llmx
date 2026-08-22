@@ -457,6 +457,7 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
         message.pop("provider_specific_fields", None)
         session.messages.append({**message, "reasoning": reasoning})
 
+        parsed_calls = []
         for tool_call in tool_calls:
             func = tool_call.get("function", {})
             tool_name = func.get("name", "unknown")
@@ -470,10 +471,12 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
                 )
                 args = {}
 
+            parsed_calls.append((tool_call, tool_name, args))
             yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, None)})}\n\n"
 
-            tool_id, result = await execute_with_retry(tool_call)
-
+        for tool_id, result in await asyncio.gather(
+            *(execute_with_retry(tool_call) for tool_call, _, _ in parsed_calls)
+        ):
             escaped_result = html.escape(result)
             yield f"data: {json.dumps({'type': 'tool_result', 'content': escaped_result})}\n\n"
 
