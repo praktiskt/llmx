@@ -110,6 +110,64 @@ class TransportPoolTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(lines, ["final-body"])
 
+    def test_streaming_close_without_read_does_not_pool(self):
+        async def early_close():
+            resp = await AsyncHttp.get(
+                f"{self.base_url()}/final", timeout=5, stream=True
+            )
+            await asyncio.sleep(0)  # let headers arrive
+            resp.close()
+
+        run(early_close())
+        idle = transport._pool.get(("http", "127.0.0.1", self.port), [])
+        self.assertEqual(idle, [])
+
+    def test_streaming_close_after_full_read_does_not_pool(self):
+        async def consume_and_close():
+            resp = await AsyncHttp.get(
+                f"{self.base_url()}/final", timeout=5, stream=True
+            )
+            try:
+                data = resp.content  # fully drain
+                assert data
+            finally:
+                resp.close()
+
+        run(consume_and_close())
+        # Even fully-drained streams are discarded — cannot prove consumption
+        # cheaply, and a poisoned pooled connection costs more than a handshake.
+        idle = transport._pool.get(("http", "127.0.0.1", self.port), [])
+        self.assertEqual(idle, [])
+
+    def test_stale_pooled_connection_silently_retried_on_fresh_socket(self):
+        class _PoisonConn:
+            host = "127.0.0.1"
+
+            def __init__(self, port):
+                self.port = port
+                self.closed = False
+
+            def request(self, *args, **kwargs):
+                pass
+
+            def getresponse(self):
+                raise http.client.BadStatusLine("0")
+
+            def close(self):
+                self.closed = True
+
+        poison = _PoisonConn(self.port)
+        transport._pool[("http", "127.0.0.1", self.port)] = [poison]
+
+        resp = run(AsyncHttp.get(f"{self.base_url()}/final", timeout=5))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.text, "final-body")
+        self.assertTrue(poison.closed, "poisoned connection must be discarded")
+        idle = transport._pool.get(("http", "127.0.0.1", self.port), [])
+        self.assertEqual(len(idle), 1)
+        self.assertIsNot(idle[0], poison)
+
 
 if __name__ == "__main__":
     unittest.main()
