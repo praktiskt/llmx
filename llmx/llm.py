@@ -752,6 +752,7 @@ class Tools:
                         json=payload,
                         timeout=60,
                     )
+                    last_error = None
                     break
                 except Exception as e:
                     last_error = e
