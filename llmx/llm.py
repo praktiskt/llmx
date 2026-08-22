@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import random
 import re
+import socket
 import string
 import sys
 import threading
@@ -196,6 +198,10 @@ class Config:
     @staticmethod
     def markdown_image_search_proxy() -> str | None:
         return os.environ.get("LLM_MARKDOWN_IMAGE_SEARCH_PROXY")
+
+    @staticmethod
+    def fetch_allow_private() -> bool:
+        return os.environ.get("LLM_FETCH_ALLOW_PRIVATE", "False").lower() == "true"
 
     @staticmethod
     def get_system_prompt() -> str:
@@ -455,6 +461,31 @@ class Cache:
 
 
 class Tools:
+    @staticmethod
+    def _is_private_url(url: str) -> bool:
+        host = urlparse(url).hostname
+        if not host:
+            return True
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except OSError:
+            return True
+        for info in infos:
+            try:
+                ip = ipaddress.ip_address(info[4][0])
+            except ValueError:
+                return True
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                return True
+        return False
+
     SCHEMA = [
         {
             "type": "function",
@@ -613,6 +644,12 @@ class Tools:
             fetch_url = f"{proxy.rstrip('/')}/{url}"
         else:
             fetch_url = url
+
+        if not Config.fetch_allow_private() and await asyncio.to_thread(
+            Tools._is_private_url, url
+        ):
+            logger.warning("Fetch blocked private/resolved-private URL: %s", url)
+            return "fetch blocked: private, loopback, or unresolvable host"
 
         headers = {"User-Agent": "Mozilla/5.0"}
         last_error = None
