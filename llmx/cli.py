@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import os
 import sys
 
 from .client import LLMClient
@@ -7,6 +9,11 @@ from .transport import LLMAPIError
 
 
 async def main() -> None:
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "WARNING").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
     prompt = [*sys.argv[1:]]
     if not sys.stdin.isatty():
         prompt.extend(["\n\n", *sys.stdin.read().splitlines()])

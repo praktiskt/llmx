@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -39,7 +38,6 @@ class DuckDuckGoLiteSearch(HTMLParser):
                     {
                         "url": unquote(actual_url),
                         "title": self.current_title.strip(),
-                        "snippet": "",
                     }
                 )
 
@@ -53,11 +51,13 @@ class DuckDuckGoLiteSearch(HTMLParser):
 
 async def _search_images(query: str, max_results: int = 5) -> str:
     proxy = Config.markdown_image_search_proxy()
-    if proxy:
-        url = f"{proxy.rstrip('/')}/{quote(query)}"
-    else:
-        url = f"https://duckduckgo.com/?q={quote(query)}&ia=images&iax=images"
+    if not proxy:
+        logger.warning(
+            "Image search without LLM_MARKDOWN_IMAGE_SEARCH_PROXY is unsupported"
+        )
+        return "Image search requires LLM_MARKDOWN_IMAGE_SEARCH_PROXY."
 
+    url = f"{proxy.rstrip('/')}/{quote(query)}"
     try:
         response = await AsyncHttp.get(
             url,
@@ -65,45 +65,7 @@ async def _search_images(query: str, max_results: int = 5) -> str:
             headers={"User-Agent": "Mozilla/5.0"},
         )
         response.raise_for_status()
-        if proxy:
-            return response.text
-
-        html = response.text
-        results = []
-        seen_urls = set()
-
-        img_pattern = re.compile(r"!\[Image \d+:")
-        for img_match in img_pattern.finditer(html):
-            search_start = img_match.end()
-            link_match = re.search(r"\]\((https?://[^)]+)\)", html[search_start:])
-            if not link_match:
-                continue
-
-            img_url = link_match.group(1)
-            if "duckduckgo.com" in img_url and "/iu/" not in img_url:
-                continue
-            if img_url in seen_urls:
-                continue
-            seen_urls.add(img_url)
-
-            parsed = urlparse(img_url)
-            params = parse_qs(parsed.query)
-            if "u" in params:
-                target_url = unquote(params["u"][0])
-            else:
-                target_url = img_url
-
-            title_start = img_match.end()
-            title_end = search_start + link_match.start()
-            title = html[title_start:title_end].strip()
-
-            results.append(f"{len(results) + 1}. [{title}]({target_url})")
-            if len(results) >= max_results:
-                break
-
-        if not results:
-            return "No images found."
-        return "\n".join(results)
+        return response.text
     except Exception:
         logger.error("Image search failed for query: %s", query, exc_info=True)
         return "Image search failed."
@@ -183,9 +145,6 @@ async def _run_search(query: str, max_results: int = 5) -> str:
             lines = []
             for i, r in enumerate(results, 1):
                 lines.append(f"{i}. [{r['title']}]({r['url']})")
-                if r["snippet"]:
-                    lines.append(f"   {r['snippet']}")
-                lines.append("")
             return "\n".join(lines).strip()
 
     logger.error(

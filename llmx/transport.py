@@ -4,8 +4,6 @@ import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
 
-from .config import Config
-
 
 class LLMAPIError(RuntimeError):
     pass
@@ -138,12 +136,3 @@ class AsyncHttp:
     @classmethod
     async def post(cls, url: str, **kwargs) -> Response:
         return await cls._request("POST", url, **kwargs)
-
-    @classmethod
-    async def head(cls, url: str) -> Response:
-        return await cls._request(
-            "HEAD",
-            url,
-            timeout=Config.HEAD_TIMEOUT,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
