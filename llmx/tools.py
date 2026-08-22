@@ -86,6 +86,9 @@ async def summarize(
     offset: int | None = None,
     limit: int | None = None,
 ) -> str:
+    concurrency = int(os.environ.get("LLM_SUMMARIZE_CONCURRENCY", "4"))
+    semaphore = asyncio.Semaphore(concurrency)
+
     async def summarize_task(task: tuple) -> tuple:
         file_id, directive, content = task
         if len(content) > 180_000:
@@ -116,41 +119,56 @@ async def summarize(
             "Content-Type": "application/json",
         }
 
-        response = await request_with_retries(
-            lambda: AsyncHttp.post(
-                os.environ["LLM_HOST"],
-                headers=headers,
-                json=payload,
-                timeout=Config.LLM_TIMEOUT,
-            ),
-            attempts=5,
-            delay=0.5,
-            retriable=lambda r: False,
-            on_exception=lambda a, e: logger.warning(
-                f"Summarize attempt {a}/5 failed for {file_id}: {e}"
-            ),
-        )
+        async with semaphore:
+            response = await request_with_retries(
+                lambda: AsyncHttp.post(
+                    os.environ["LLM_HOST"],
+                    headers=headers,
+                    json=payload,
+                    timeout=Config.LLM_TIMEOUT,
+                ),
+                attempts=5,
+                fail_fast=True,
+                on_exception=lambda a, e: logger.warning(
+                    f"Summarize attempt {a}/5 failed for {file_id}: {e}"
+                ),
+                on_retry=lambda a, r: logger.warning(
+                    "Summarize API %d (attempt %d/5) for %s: %s, retrying...",
+                    r.status_code,
+                    a,
+                    file_id,
+                    r.text[:120],
+                ),
+            )
 
-        if response is None:
+        if response is None or response.status_code != 200:
+            status = response.status_code if response else "no response"
+            body = response.text[:200] if response else "all attempts raised"
             logger.error(
-                "Summarize failed for file %s after 5 attempts",
+                "Summarize failed for file %s (status %s): %s",
                 file_id,
+                status,
+                body,
             )
             return (
                 file_id,
                 directive,
-                "Error summarizing: All 5 attempts timed out. Do you want me to try again?",
+                "Error summarizing: all 5 attempts failed. Do you want me to try again?",
             )
 
-        if response.status_code != 200:
+        try:
+            summary = response.json()["choices"][0]["message"]["content"] or ""
+        except KeyError, IndexError, TypeError, ValueError:
             logger.error(
-                "Summarize API error %d for file %s",
-                response.status_code,
+                "Summarize got malformed response for file %s: %.200s",
                 file_id,
+                response.text,
             )
-            return (file_id, directive, f"Error: {response.status_code}")
-
-        summary = response.json()["choices"][0]["message"]["content"]
+            return (
+                file_id,
+                directive,
+                "Error summarizing: unexpected API response shape",
+            )
 
         if len(summary) > max_length:
             summary = summary[: max_length - 3] + "..."
