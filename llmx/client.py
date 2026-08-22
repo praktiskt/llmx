@@ -191,29 +191,33 @@ class LLMClient:
         reasoning_parts = []
         tool_calls: dict[int, dict] = {}
         final_message = None
+        reasoning_len = 0
         reasoning_len_flushed = 0
+        reasoning_pending_ends_nl = True
 
         def flush_thinking() -> None:
-            nonlocal reasoning_len_flushed
-            joined = "".join(reasoning_parts)
-            if len(joined) == reasoning_len_flushed:
+            nonlocal reasoning_len_flushed, reasoning_pending_ends_nl
+            if reasoning_len == reasoning_len_flushed:
                 return
             if Config.color_output_enabled():
                 Log.stderr(Color.RESET, end="")
-            if not joined[reasoning_len_flushed:].endswith("\n"):
+            if not reasoning_pending_ends_nl:
                 Log.stderr("")
-            reasoning_len_flushed = len(joined)
+            reasoning_len_flushed = reasoning_len
+            reasoning_pending_ends_nl = True
 
         def append_thinking(fragment: str) -> None:
-            nonlocal reasoning_len_flushed
+            nonlocal reasoning_len, reasoning_len_flushed, reasoning_pending_ends_nl
             if not Config.thinking_enabled() or not fragment:
                 return
-            if len("".join(reasoning_parts)) == reasoning_len_flushed:
+            if reasoning_len == reasoning_len_flushed:
                 prefix = f"{Color.dim('[thinking]')} "
                 if Config.color_output_enabled():
                     prefix += Color.THINKING
                 Log.stderr(prefix, end="", flush=True)
             reasoning_parts.append(fragment)
+            reasoning_len += len(fragment)
+            reasoning_pending_ends_nl = fragment.endswith("\n")
             Log.stderr(fragment, end="", flush=True)
 
         def append_content(fragment: str) -> None:
