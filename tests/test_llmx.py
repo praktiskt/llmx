@@ -331,7 +331,7 @@ class SessionStoreTest(unittest.TestCase):
             s.last_access -= 7200  # simulate age
             s2, sid2 = srv.get_session(sid)
             self.assertIsNot(s, s2)
-            self.assertEqual(sid2, sid)
+            self.assertNotEqual(sid2, sid)
         finally:
             srv.SESSION_TTL_SECONDS = old_ttl
             srv.sessions.clear()
