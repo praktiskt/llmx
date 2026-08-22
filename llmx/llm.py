@@ -256,6 +256,13 @@ class Cache:
     _storage: OrderedDict[str, str] = OrderedDict()
 
     @staticmethod
+    def new_id() -> str:
+        while True:
+            file_id = Config.generate_file_id()
+            if file_id not in Cache._storage:
+                return file_id
+
+    @staticmethod
     def store(file_id: str, content: str) -> None:
         wrapped_lines = []
         for line in content.splitlines():
@@ -586,7 +593,7 @@ class Tools:
     @staticmethod
     async def _fetch_single(url: str) -> str:
         def store_and_return(content: str) -> str:
-            file_id = Config.generate_file_id()
+            file_id = Cache.new_id()
             Cache.store(file_id, content)
             return f'Stored as {file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (file_id="{file_id}")'
 
@@ -771,7 +778,7 @@ class Tools:
                 result = await Tools._search_images(query, max_results)
             else:
                 result = await Tools._run_search(query, max_results)
-            file_id = Config.generate_file_id()
+            file_id = Cache.new_id()
             Cache.store(file_id, result)
             return (query, file_id)
 
