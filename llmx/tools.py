@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from .cache import Cache
 from .config import Config
 from .search import search as _search
-from .transport import AsyncHttp
+from .transport import AsyncHttp, request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -116,31 +116,25 @@ async def summarize(
             "Content-Type": "application/json",
         }
 
-        last_error = None
-        for attempt in range(5):
-            try:
-                response = await AsyncHttp.post(
-                    os.environ["LLM_HOST"],
-                    headers=headers,
-                    json=payload,
-                    timeout=Config.LLM_TIMEOUT,
-                )
-                last_error = None
-                break
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"Summarize attempt {attempt + 1}/5 failed for {file_id}: {e}"
-                )
-                if attempt < 4:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                continue
+        response = await request_with_retries(
+            lambda: AsyncHttp.post(
+                os.environ["LLM_HOST"],
+                headers=headers,
+                json=payload,
+                timeout=Config.LLM_TIMEOUT,
+            ),
+            attempts=5,
+            delay=0.5,
+            retriable=lambda r: False,
+            on_exception=lambda a, e: logger.warning(
+                f"Summarize attempt {a}/5 failed for {file_id}: {e}"
+            ),
+        )
 
-        if last_error is not None:
+        if response is None:
             logger.error(
-                "Summarize failed for file %s after 5 attempts: %s",
+                "Summarize failed for file %s after 5 attempts",
                 file_id,
-                last_error,
             )
             return (
                 file_id,
@@ -399,26 +393,25 @@ class Tools:
             return "fetch blocked: private, loopback, or unresolvable host"
 
         headers = {"User-Agent": "Mozilla/5.0"}
-        last_error = None
-        for attempt in range(3):
-            try:
-                response = await AsyncHttp.get(
-                    fetch_url, timeout=Config.FETCH_TIMEOUT, headers=headers
-                )
-                if response.status_code == 200:
-                    return store_and_return(response.text)
-                return f"fetch failed (status {response.status_code})"
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "Fetch attempt %d/3 failed for %s: %s", attempt + 1, url, e
-                )
-                if attempt < 2:
-                    await asyncio.sleep(0.3 * (attempt + 1))
-                    continue
+        response = await request_with_retries(
+            lambda: AsyncHttp.get(
+                fetch_url, timeout=Config.FETCH_TIMEOUT, headers=headers
+            ),
+            attempts=3,
+            delay=0.3,
+            retriable=lambda r: False,
+            on_exception=lambda a, e: logger.warning(
+                "Fetch attempt %d/3 failed for %s: %s", a, url, e
+            ),
+        )
 
-        logger.error("Fetch failed for %s after 3 attempts: %s", url, last_error)
-        return f"fetch failed: {last_error}"
+        if response is None:
+            logger.error("Fetch failed for %s after 3 attempts", url)
+            return "fetch failed after 3 attempts"
+
+        if response.status_code == 200:
+            return store_and_return(response.text)
+        return f"fetch failed (status {response.status_code})"
 
     @staticmethod
     async def fetch(urls: list[str]) -> str:

@@ -2,11 +2,12 @@ import asyncio
 import json
 import os
 import threading
+from collections.abc import Awaitable
 
 from .config import Config
 from .output import Color, Log
 from .tools import Tools, parse_tool_args
-from .transport import AsyncHttp, LLMAPIError
+from .transport import AsyncHttp, LLMAPIError, Response, request_with_retries
 
 _STREAM_EOF = object()
 
@@ -50,29 +51,27 @@ class LLMClient:
         while True:
             msg = LLMClient.body(messages=messages)
 
-            response = None
-            for attempt in range(5):
-                try:
-                    response = await AsyncHttp.post(
-                        os.environ["LLM_HOST"],
-                        headers=headers,
-                        data=json.dumps(msg),
-                        stream=Config.is_stream(),
-                        timeout=Config.LLM_TIMEOUT,
-                    )
-                except Exception as e:
-                    Log.stderr(
-                        f"{Color.ERROR}[error]: attempt {attempt + 1}/5 failed: {e}{Color.RESET}"
-                    )
-                    continue
-
-                if response.status_code == 200:
-                    break
-
-                Log.stderr(
-                    f"{Color.ERROR}[error]: API {response.status_code} (attempt {attempt + 1}/5): "
-                    f"{response.content.decode(errors='replace')[:200]}, retrying{Color.RESET}"
+            def send(msg=msg) -> Awaitable[Response]:
+                return AsyncHttp.post(
+                    os.environ["LLM_HOST"],
+                    headers=headers,
+                    data=json.dumps(msg),
+                    stream=Config.is_stream(),
+                    timeout=Config.LLM_TIMEOUT,
                 )
+
+            def log_failure(text: str) -> None:
+                Log.stderr(f"{Color.ERROR}[error]: {text}{Color.RESET}")
+
+            response = await request_with_retries(
+                send,
+                attempts=5,
+                on_exception=lambda a, e: log_failure(f"attempt {a}/5 failed: {e}"),
+                on_retry=lambda a, r: log_failure(
+                    f"API {r.status_code} (attempt {a}/5): "
+                    f"{r.content.decode(errors='replace')[:200]}, retrying"
+                ),
+            )
 
             if response is None or response.status_code != 200:
                 status = response.status_code if response else "no response"

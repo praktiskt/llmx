@@ -2,12 +2,54 @@ import asyncio
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Awaitable, Callable
 
 from .config import Config
 
 
 class LLMAPIError(RuntimeError):
     pass
+
+
+async def request_with_retries(
+    send: Callable[[], Awaitable[Response]],
+    attempts: int = 5,
+    delay: float = 0.0,
+    retriable: Callable[[Response], bool] | None = None,
+    on_exception: Callable[[int, Exception], None] | None = None,
+    on_retry: Callable[[int, Response], None] | None = None,
+) -> Response | None:
+    """Run send() up to `attempts` times.
+
+    Returns the final Response (200, non-retriable, or exhausted retries), or
+    None if every attempt raised an exception. Sleeps delay*attempt between tries.
+    """
+    if retriable is None:
+
+        def retriable(response: Response) -> bool:
+            return response.status_code >= 400
+
+    last_response: Response | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = await send()
+        except Exception as e:
+            if on_exception is not None:
+                on_exception(attempt, e)
+            if attempt < attempts and delay:
+                await asyncio.sleep(delay * attempt)
+            continue
+
+        last_response = response
+        if response.status_code != 200 and retriable(response) and attempt < attempts:
+            if on_retry is not None:
+                on_retry(attempt, response)
+            if delay:
+                await asyncio.sleep(delay * attempt)
+            continue
+        return response
+
+    return last_response
 
 
 class Response:

@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .cache import Cache
 from .config import Config
-from .transport import AsyncHttp
+from .transport import AsyncHttp, request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -131,63 +131,68 @@ async def _run_search(query: str, max_results: int = 5) -> str:
     proxy = Config.markdown_search_proxy()
     if proxy:
         url = f"{proxy.rstrip('/')}/{quote(query)}"
-        for attempt in range(3):
-            try:
-                response = await AsyncHttp.get(
-                    url, timeout=Config.SEARCH_TIMEOUT, headers=headers
-                )
-                response.raise_for_status()
-                return response.text.strip()
-            except Exception:
-                if attempt < 2:
-                    logger.warning(
-                        "Search proxy attempt %d failed for '%s', retrying...",
-                        attempt + 1,
-                        query,
-                    )
-                    await asyncio.sleep(0.3 * (attempt + 1))
-                    continue
-                logger.error(
-                    "Search proxy failed after retries for '%s'",
-                    query,
-                    exc_info=True,
-                )
-        return "Search failed after retries."
 
-    url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
-    for attempt in range(3):
-        try:
+        async def send_proxy():
             response = await AsyncHttp.get(
                 url, timeout=Config.SEARCH_TIMEOUT, headers=headers
             )
             response.raise_for_status()
+            return response
 
-            parser = DuckDuckGoLiteSearch()
-            parser.feed(response.text)
-            results = parser.get_results(max_results)
-            if results:
-                lines = []
-                for i, r in enumerate(results, 1):
-                    lines.append(f"{i}. [{r['title']}]({r['url']})")
-                    if r["snippet"]:
-                        lines.append(f"   {r['snippet']}")
-                    lines.append("")
-                return "\n".join(lines).strip()
-        except Exception:
-            if attempt < 2:
-                logger.warning(
-                    "DuckDuckGo search attempt %d failed for '%s', retrying...",
-                    attempt + 1,
-                    query,
-                )
-                await asyncio.sleep(0.3 * (attempt + 1))
-                continue
+        response = await request_with_retries(
+            send_proxy,
+            attempts=3,
+            delay=0.3,
+            retriable=lambda r: False,
+            on_exception=lambda a, e: logger.warning(
+                "Search proxy attempt %d failed for '%s': %s", a, query, e
+            ),
+        )
+        if response is None:
             logger.error(
-                "DuckDuckGo search failed after retries for '%s'",
+                "Search proxy failed after retries for '%s'",
                 query,
                 exc_info=True,
             )
+            return "Search failed after retries."
+        return response.text.strip()
 
+    url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
+
+    async def send_ddg():
+        response = await AsyncHttp.get(
+            url, timeout=Config.SEARCH_TIMEOUT, headers=headers
+        )
+        response.raise_for_status()
+        return response
+
+    response = await request_with_retries(
+        send_ddg,
+        attempts=3,
+        delay=0.3,
+        retriable=lambda r: False,
+        on_exception=lambda a, e: logger.warning(
+            "DuckDuckGo search attempt %d failed for '%s': %s", a, query, e
+        ),
+    )
+    if response is not None:
+        parser = DuckDuckGoLiteSearch()
+        parser.feed(response.text)
+        results = parser.get_results(max_results)
+        if results:
+            lines = []
+            for i, r in enumerate(results, 1):
+                lines.append(f"{i}. [{r['title']}]({r['url']})")
+                if r["snippet"]:
+                    lines.append(f"   {r['snippet']}")
+                lines.append("")
+            return "\n".join(lines).strip()
+
+    logger.error(
+        "DuckDuckGo search failed after retries for '%s'",
+        query,
+        exc_info=True,
+    )
     return "Search failed after retries."
 
 
