@@ -21,6 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .client import LLMClient
 from .config import Config
 from .tools import Tools
 
@@ -348,15 +349,8 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
 
     client = get_http_client()
     for _ in range(max_iterations):
-        payload = {
-            "messages": session.messages,
-            "model": os.environ["LLM_MODEL"],
-            "temperature": float(os.environ.get("LLM_TEMPERATURE", 0.1)),
-            "stream": False,
-        }
-
-        if Config.tools_enabled():
-            payload["tools"] = Tools.SCHEMA
+        payload = LLMClient.body(session.messages)
+        payload["stream"] = False
 
         response = None
         last_attempt_failed = False
