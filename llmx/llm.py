@@ -1295,22 +1295,24 @@ class LLMClient:
         reasoning_parts = []
         tool_calls: dict[int, dict] = {}
         final_message = None
-        reasoning_flushed = False
+        reasoning_len_flushed = 0
 
         def flush_thinking() -> None:
-            nonlocal reasoning_flushed
-            if reasoning_flushed or not reasoning_parts:
+            nonlocal reasoning_len_flushed
+            joined = "".join(reasoning_parts)
+            if len(joined) == reasoning_len_flushed:
                 return
-            reasoning_flushed = True
             if Config.color_output_enabled():
                 Log.stderr(Color.RESET, end="")
-            if not "".join(reasoning_parts).endswith("\n"):
+            if not joined[reasoning_len_flushed:].endswith("\n"):
                 Log.stderr("")
+            reasoning_len_flushed = len(joined)
 
         def append_thinking(fragment: str) -> None:
+            nonlocal reasoning_len_flushed
             if not Config.thinking_enabled() or not fragment:
                 return
-            if not reasoning_parts:
+            if len("".join(reasoning_parts)) == reasoning_len_flushed:
                 prefix = f"{Color.dim('[thinking]')} "
                 if Config.color_output_enabled():
                     prefix += Color.THINKING
