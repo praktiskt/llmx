@@ -9,6 +9,7 @@ import random
 import re
 import string
 import sys
+import threading
 from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
@@ -997,13 +998,6 @@ class Tools:
 _STREAM_EOF = object()
 
 
-def _safe_next(iterator):
-    try:
-        return next(iterator)
-    except StopIteration:
-        return _STREAM_EOF
-
-
 class LLMClient:
     @staticmethod
     def body(messages: list) -> dict:
@@ -1178,12 +1172,28 @@ class LLMClient:
             Log.stdout(fragment, end="", flush=True)
 
         try:
-            response.encoding = "utf-8"
-            lines = response.iter_lines(decode_unicode=True)
+            loop = asyncio.get_running_loop()
+            queue: asyncio.Queue = asyncio.Queue()
+
+            def pump() -> None:
+                try:
+                    response.encoding = "utf-8"
+                    for line in response.iter_lines(decode_unicode=True):
+                        loop.call_soon_threadsafe(queue.put_nowait, line)
+                except Exception as e:
+                    loop.call_soon_threadsafe(queue.put_nowait, e)
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, _STREAM_EOF)
+
+            threading.Thread(target=pump, daemon=True).start()
+
             while True:
-                line = await asyncio.to_thread(_safe_next, lines)
-                if line is _STREAM_EOF:
+                item = await queue.get()
+                if item is _STREAM_EOF:
                     break
+                if isinstance(item, Exception):
+                    raise item
+                line = item
                 if not line:
                     continue
                 if not line.startswith("data:"):
