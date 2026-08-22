@@ -1131,7 +1131,7 @@ class LLMClient:
                 )
 
     @staticmethod
-    async def _read_stream(response) -> dict:
+    async def _read_stream(response) -> tuple[dict, bool]:
         content_parts = []
         reasoning_parts = []
         tool_calls: dict[int, dict] = {}
