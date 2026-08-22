@@ -68,7 +68,12 @@ class AsyncHttp:
             if payload is not None:
                 body = json.dumps(payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
-            req = urllib.request.Request(url, data=body, headers=headers, method=method)
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={"User-Agent": "Mozilla/5.0", **headers},
+                method=method,
+            )
             try:
                 fp = urllib.request.urlopen(req, timeout=kwargs.get("timeout"))
                 if kwargs.get("stream"):
