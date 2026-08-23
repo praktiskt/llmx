@@ -25,8 +25,15 @@ class Config:
         return os.environ.get("LLM_STREAM", "True").lower() == "true"
 
     @staticmethod
-    def tools_enabled():
-        return os.environ.get("LLM_ENABLE_TOOLS", "True").lower() == "true"
+    def allowed_tools() -> set[str] | None:
+        """Allowlist from LLM_TOOLS (comma-separated names).
+
+        Unset -> all tools. Set -> exactly those tools; empty value disables all.
+        """
+        raw = os.environ.get("LLM_TOOLS")
+        if raw is None:
+            return None
+        return {name.strip() for name in raw.split(",") if name.strip()}
 
     @staticmethod
     def color_output_enabled():

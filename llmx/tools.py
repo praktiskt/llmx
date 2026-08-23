@@ -447,7 +447,18 @@ class Tools:
         return value
 
     @staticmethod
+    def schema() -> list[dict]:
+        """SCHEMA filtered down to Config.allowed_tools()."""
+        allowed = Config.allowed_tools()
+        if allowed is None:
+            return Tools.SCHEMA
+        return [tool for tool in Tools.SCHEMA if tool["function"]["name"] in allowed]
+
+    @staticmethod
     async def execute(tool_name: str, tool_args: dict) -> str:
+        allowed = Config.allowed_tools()
+        if allowed is not None and tool_name not in allowed:
+            return f"Error: tool '{tool_name}' is not enabled"
         handlers = {
             "fetch": Tools._exec_fetch,
             "search": Tools._exec_search,

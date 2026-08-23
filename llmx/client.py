@@ -127,8 +127,9 @@ class LLMClient:
         if Config.response_format() is not None:
             d["response_format"] = Config.response_format()
 
-        if Config.tools_enabled():
-            d["tools"] = Tools.SCHEMA
+        tools = Tools.schema()
+        if tools:
+            d["tools"] = tools
 
         return d
 
@@ -209,7 +210,7 @@ class LLMClient:
                         )
 
             tool_calls = message.get("tool_calls") or []
-            if not tool_calls or not Config.tools_enabled():
+            if not tool_calls or not Tools.schema():
                 content = message.get("content", "")
                 if content and not printed:
                     Log.stdout(content)

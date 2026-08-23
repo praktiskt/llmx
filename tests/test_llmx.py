@@ -1,11 +1,12 @@
 import asyncio
+import os
 import time
 import unittest
 
 from llmx.cache import Cache
 from llmx.client import StreamFilter, truncate_history
 from llmx.config import Config
-from llmx.tools import _repair_json, parse_tool_args
+from llmx.tools import Tools, _repair_json, parse_tool_args
 from llmx.transport import Response, request_with_retries
 
 
@@ -476,6 +477,44 @@ class ReadStreamFilterWiringTest(unittest.TestCase):
         message, printed = asyncio.run(LLMClient._read_stream(self._FakeSSE(lines)))
         self.assertEqual(message["content"], "pre post")
         self.assertTrue(printed)
+
+
+class ToolsAllowlistTest(unittest.TestCase):
+    def setUp(self):
+        self._env = os.environ.get("LLM_TOOLS")
+        os.environ.pop("LLM_TOOLS", None)
+
+    def tearDown(self):
+        if self._env is None:
+            os.environ.pop("LLM_TOOLS", None)
+        else:
+            os.environ["LLM_TOOLS"] = self._env
+
+    def test_unset_allows_all(self):
+
+        self.assertEqual(len(Tools.schema()), len(Tools.SCHEMA))
+
+    def test_allowlist_filters_schema(self):
+
+        os.environ["LLM_TOOLS"] = "fetch, read_file"
+        names = {t["function"]["name"] for t in Tools.schema()}
+        self.assertEqual(names, {"fetch", "read_file"})
+
+    def test_empty_value_disables_all(self):
+
+        os.environ["LLM_TOOLS"] = ""
+        self.assertEqual(Tools.schema(), [])
+
+    def test_execute_blocks_disabled_tool(self):
+        os.environ["LLM_TOOLS"] = "fetch"
+        result = asyncio.run(Tools.execute("grep_file", {}))
+        self.assertIn("not enabled", result)
+
+    def test_execute_allows_enabled_tool(self):
+        Cache.store("abc123", "hello")
+        os.environ["LLM_TOOLS"] = "read_file"
+        result = asyncio.run(Tools.execute("read_file", {"file_ids": ["abc123"]}))
+        self.assertIn("hello", result)
 
 
 if __name__ == "__main__":
