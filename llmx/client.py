@@ -148,6 +148,9 @@ class LLMClient:
             "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            # No keep-alive on gateway traffic: a pinned connection sticks to
+            # one load-balancer backend, so retries never rotate backends.
+            "Connection": "close",
         }
 
         while True:

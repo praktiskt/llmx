@@ -52,7 +52,10 @@ def get_http_client() -> httpx.AsyncClient:
     if _http_client is None:
         _http_client = httpx.AsyncClient(
             timeout=120,
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            # No keep-alive on gateway traffic: a pooled connection pins us to
+            # one load-balancer backend, so 5 retries would all hit the same
+            # backend. Fresh dial per request lets the LB re-select.
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=0),
         )
     return _http_client
 
