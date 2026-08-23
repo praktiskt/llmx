@@ -158,30 +158,36 @@ body {
 #input-area button.loading .spinner { display: inline-block; }
 #input-area button.loading .btn-text { display: none; }
 
-.loading-line {
-    display: none;
+
+#input-area::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        var(--peach) 25%,
+        var(--mauve) 50%,
+        var(--peach) 75%,
+        transparent 100%
+    );
+    background-size: 200% 100%;
+    pointer-events: none;
+    z-index: 1;
 }
 
-@keyframes line-glow {
-    0%, 100% { opacity: 0.3; }
-    50% { opacity: 1; }
+#input-area.loading::before {
+    opacity: 1;
+    animation: line-sweep 1.2s linear infinite;
 }
 
-#input-area.loading {
-    animation: glow 3s ease-in-out infinite;
-}
-
-@keyframes glow {
-    0%, 100% { 
-        background: rgba(250, 137, 123, 0.85);
-        border-color: transparent;
-        box-shadow: 15px -3px 20px rgba(250, 137, 123, 0.6), -15px -3px 20px rgba(250, 137, 123, 0.6), 10px 0 15px rgba(250, 137, 123, 0.4), -10px 0 15px rgba(250, 137, 123, 0.4);
-    }
-    50% { 
-        background: rgba(250, 137, 123, 1);
-        border-color: transparent;
-        box-shadow: 20px -5px 30px rgba(250, 137, 123, 0.8), -20px -5px 30px rgba(250, 137, 123, 0.8), 15px -10px 50px rgba(250, 137, 123, 0.5), -15px -10px 50px rgba(250, 137, 123, 0.5), 15px 0 25px rgba(250, 137, 123, 0.5), -15px 0 25px rgba(250, 137, 123, 0.5);
-    }
+@keyframes line-sweep {
+    to { background-position: -200% 0; }
 }
 
 .typing { display: inline-block; }
