@@ -251,9 +251,22 @@ function handleEvent(event) {
             addMessage(content, 'assistant');
         }
     } else if (type === 'tool_call') {
-        addMessage(content, 'tool-call');
+        const div = document.createElement('div');
+        div.className = 'message tool-call';
+        div.innerHTML = content;
+        if (event.id) div.dataset.toolId = event.id;
+        chat.appendChild(div);
+        scrollChat();
     } else if (type === 'tool_result') {
-        const lastToolCall = chat.querySelector('.message.tool-call:last-child');
+        let lastToolCall = null;
+        if (event.id) {
+            lastToolCall = chat.querySelector(
+                `.message.tool-call[data-tool-id="${CSS.escape(event.id)}"]`
+            );
+        }
+        if (!lastToolCall) {
+            lastToolCall = chat.querySelector('.message.tool-call:last-child');
+        }
         if (lastToolCall) {
             const loading = lastToolCall.querySelector('.tool-loading');
             if (loading) loading.remove();

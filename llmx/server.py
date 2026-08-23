@@ -597,13 +597,13 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
                 args = {}
 
             parsed_calls.append((tool_call, tool_name, args))
-            yield f"data: {json.dumps({'type': 'tool_call', 'content': format_tool_call(tool_name, args, None)})}\n\n"
+            yield f"data: {json.dumps({'type': 'tool_call', 'id': tool_call.get('id', ''), 'content': format_tool_call(tool_name, args, None)})}\n\n"
 
         for tool_id, result in await asyncio.gather(
             *(execute_with_retry(tool_call) for tool_call, _, _ in parsed_calls)
         ):
             escaped_result = html.escape(result)
-            yield f"data: {json.dumps({'type': 'tool_result', 'content': escaped_result})}\n\n"
+            yield f"data: {json.dumps({'type': 'tool_result', 'id': tool_id, 'content': escaped_result})}\n\n"
 
             if await request.is_disconnected():
                 return
