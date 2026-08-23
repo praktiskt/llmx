@@ -88,10 +88,8 @@ class _PooledStream:
         return iter(self._resp)
 
     def close(self) -> None:
-        # Streaming consumers may exit early ([DONE] sentinel, errors) leaving
-        # unread body bytes on the socket; pooling such a connection poisons
-        # the pool (next request reads stale bytes as its status line).
-        # Always discard streaming connections.
+        # Streaming may exit early ([DONE], errors) leaving unread body bytes;
+        # pooling that connection poisons the pool. Always discard.
         try:
             self._resp.close()
         except Exception:

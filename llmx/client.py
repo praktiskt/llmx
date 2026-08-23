@@ -26,7 +26,7 @@ class StreamFilter:
 
     def __init__(self) -> None:
         self._buf = ""
-        self._close_tag: str | None = None  # set while inside a suppressed block
+        self._close_tag: str | None = None
 
     def feed(self, text: str) -> str:
         if not text:
@@ -148,8 +148,7 @@ class LLMClient:
             "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            # No keep-alive on gateway traffic: a pinned connection sticks to
-            # one load-balancer backend, so retries never rotate backends.
+            # No keep-alive: retries must rotate load-balancer backends.
             "Connection": "close",
         }
 
@@ -372,7 +371,6 @@ class LLMClient:
         finally:
             response.close()
 
-        # Release any text held back by the harness-artifact filters.
         tail = reasoning_filter.flush()
         if tail:
             reasoning_parts.append(tail)

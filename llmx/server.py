@@ -52,9 +52,7 @@ def get_http_client() -> httpx.AsyncClient:
     if _http_client is None:
         _http_client = httpx.AsyncClient(
             timeout=120,
-            # No keep-alive on gateway traffic: a pooled connection pins us to
-            # one load-balancer backend, so 5 retries would all hit the same
-            # backend. Fresh dial per request lets the LB re-select.
+            # max_keepalive_connections=0: retries must rotate LB backends.
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=0),
         )
     return _http_client
@@ -205,8 +203,7 @@ async def log_requests(request: Request, call_next):
         response = await call_next(request)
         duration_ms = (time.monotonic() - start) * 1000
         if request.url.path.startswith("/static"):
-            # Static assets change between deployments; never let browsers
-            # pin stale JS/CSS across releases.
+            # static assets change between deployments
             response.headers["Cache-Control"] = "no-cache"
         logger.info(
             "%s %s %d %.0fms client=%s session=%s",
@@ -544,7 +541,6 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
         finally:
             await response.aclose()
 
-        # Release any text held back by the harness-artifact filters.
         tail = reasoning_filter.flush()
         if tail:
             reasoning_parts.append(tail)

@@ -73,12 +73,11 @@ class TransportPoolTest(unittest.TestCase):
     def test_post_body_roundtrip(self):
         resp = run(
             AsyncHttp.post(
-                f"{self.base_url()}/echo",
+                f"{self.base_url()}/final",
                 json={"a": 1},
                 timeout=5,
             )
         )
-        # /echo falls through to POST handler; json body serialized
         self.assertEqual(resp.status_code, 201)
         self.assertIn(b'"a"', resp.content)
 
@@ -128,14 +127,13 @@ class TransportPoolTest(unittest.TestCase):
                 f"{self.base_url()}/final", timeout=5, stream=True
             )
             try:
-                data = resp.content  # fully drain
-                assert data
+                assert resp.content
             finally:
                 resp.close()
 
         run(consume_and_close())
-        # Even fully-drained streams are discarded: cannot prove consumption
-        # cheaply, and a poisoned pooled connection costs more than a handshake.
+        # fully-drained streams are still discarded: a poisoned pooled
+        # connection costs more than a handshake
         idle = transport._pool.get(("http", "127.0.0.1", self.port), [])
         self.assertEqual(idle, [])
 

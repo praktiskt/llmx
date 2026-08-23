@@ -328,7 +328,7 @@ class SessionStoreTest(unittest.TestCase):
         try:
             srv.sessions.clear()
             s, sid = srv.get_session(None)
-            s.last_access -= 7200  # simulate age
+            s.last_access -= 7200
             s2, sid2 = srv.get_session(sid)
             self.assertIsNot(s, s2)
             self.assertNotEqual(sid2, sid)
