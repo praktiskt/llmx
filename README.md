@@ -38,9 +38,9 @@ make test    # stdlib unittest
 
 ## Env (optional)
 
-`LLM_TOOLS` — comma-separated tool allowlist (`fetch,search,read_file,grep_file,summarize`);
-unset = all tools, empty = none. Other options:
-`LLM_TEMPERATURE` (0.1), `LLM_STREAM` (True), `LLM_SHOW_THINKING` (True),
+`LLM_TOOLS` (unset = all tools, empty = none, else comma-separated allowlist:
+`fetch,search,read_file,grep_file,summarize`), `LLM_TEMPERATURE` (0.1),
+`LLM_STREAM` (True), `LLM_SHOW_THINKING` (True),
 `LLM_MAX_CONTEXT_CHARS` (200000), `LLM_MARKDOWN_FETCH_PROXY`,
 `_SEARCH_PROXY`, `_IMAGE_SEARCH_PROXY`, `LLM_FETCH_ALLOW_PRIVATE` (False),
 `LLM_SUMMARIZE_CONCURRENCY` (4), `LLM_SESSION_TTL` (3600),
