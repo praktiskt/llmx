@@ -3,7 +3,7 @@ import time
 import unittest
 
 from llmx.cache import Cache
-from llmx.client import truncate_history
+from llmx.client import StreamFilter, truncate_history
 from llmx.config import Config
 from llmx.tools import _repair_json, parse_tool_args
 from llmx.transport import Response, request_with_retries
@@ -398,6 +398,84 @@ class ExecuteWithRetryTest(unittest.TestCase):
             srv.Tools.execute_wrapper = staticmethod(orig)
         self.assertEqual(len(calls), 3)
         self.assertEqual(result, "fine")
+
+
+class StreamFilterTest(unittest.TestCase):
+    def test_plain_text_passthrough(self):
+        f = StreamFilter()
+        self.assertEqual(f.feed("hello world\nsecond line"), "hello world\nsecond line")
+        self.assertEqual(f.flush(), "")
+
+    def test_block_single_fragment_removed(self):
+        f = StreamFilter()
+        text = "A<system-reminder>secret plans</system-reminder>B"
+        self.assertEqual(f.feed(text), "AB")
+
+    def test_block_split_across_fragments(self):
+        f = StreamFilter()
+        out = f.feed("answer <system-")
+        out += f.feed("reminder>injected junk</system-")
+        out += f.feed("reminder> done")
+        self.assertEqual(out, "answer  done")
+
+    def test_partial_open_tag_held_then_completed(self):
+        f = StreamFilter()
+        out = f.feed("keep me <syst")
+        self.assertEqual(out, "keep me ")
+        out += f.feed("em-reminder>junk</system-reminder>tail")
+        self.assertEqual(out + f.flush(), "keep me tail")
+
+    def test_unterminated_block_suppressed_and_flush_empty(self):
+        f = StreamFilter()
+        out = f.feed("ok <system-reminder>never closed...")
+        self.assertEqual(out, "ok ")
+        self.assertEqual(f.flush(), "")
+
+    def test_multiple_blocks(self):
+        f = StreamFilter()
+        text = (
+            "<system-reminder>a</system-reminder>X<system-reminder>b</system-reminder>Y"
+        )
+        self.assertEqual(f.feed(text), "XY")
+
+    def test_case_sensitive(self):
+        f = StreamFilter()
+        self.assertEqual(
+            f.feed("<System-Reminder>kept</System-Reminder>"),
+            "<System-Reminder>kept</System-Reminder>",
+        )
+
+    def test_split_tag_across_three_tiny_fragments(self):
+        f = StreamFilter()
+        pieces = ["hi ", "<system", "-remi", "nder>x</system", "-reminder>", "bye"]
+        out = "".join(f.feed(p) for p in pieces) + f.flush()
+        self.assertEqual(out, "hi bye")
+
+
+class ReadStreamFilterWiringTest(unittest.TestCase):
+    class _FakeSSE:
+        def __init__(self, sse_lines):
+            self._lines = [ln.encode("utf-8") for ln in sse_lines]
+            self.encoding = None
+
+        def iter_lines(self, decode_unicode=False):
+            for raw in self._lines:
+                yield raw.decode("utf-8") if decode_unicode else raw
+
+        def close(self):
+            pass
+
+    def test_reader_strips_reminders_from_content_and_history(self):
+        from llmx.client import LLMClient
+
+        lines = [
+            'data: {"choices":[{"delta":{"content":"pre <system-"}}]}',
+            'data: {"choices":[{"delta":{"content":"reminder>secret tail</system-reminder>post"}}]}',
+            "data: [DONE]",
+        ]
+        message, printed = asyncio.run(LLMClient._read_stream(self._FakeSSE(lines)))
+        self.assertEqual(message["content"], "pre post")
+        self.assertTrue(printed)
 
 
 if __name__ == "__main__":

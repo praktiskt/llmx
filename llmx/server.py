@@ -24,7 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .client import LLMClient, truncate_history
+from .client import LLMClient, StreamFilter, truncate_history
 from .config import Config
 from .tools import Tools
 from .transport import request_with_retries
@@ -486,6 +486,8 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
         content_parts = []
         streamed_tool_calls: dict[int, dict] = {}
         final_message = None
+        reasoning_filter = StreamFilter()
+        content_filter = StreamFilter()
 
         try:
             async for line in response.aiter_lines():
@@ -511,9 +513,13 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
                 delta = choice.get("delta") or {}
                 r = delta.get("reasoning_content") or delta.get("reasoning") or ""
                 if r:
+                    r = reasoning_filter.feed(r)
+                if r:
                     reasoning_parts.append(r)
                     yield _sse({"type": "thinking_delta", "content": html.escape(r)})
                 c = delta.get("content") or ""
+                if c:
+                    c = content_filter.feed(c)
                 if c:
                     content_parts.append(c)
                     yield _sse({"type": "message_delta", "content": html.escape(c)})
@@ -534,6 +540,16 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
                     entry["function"]["arguments"] += fn.get("arguments", "") or ""
         finally:
             await response.aclose()
+
+        # Release any text held back by the harness-artifact filters.
+        tail = reasoning_filter.flush()
+        if tail:
+            reasoning_parts.append(tail)
+            yield _sse({"type": "thinking_delta", "content": html.escape(tail)})
+        tail = content_filter.flush()
+        if tail:
+            content_parts.append(tail)
+            yield _sse({"type": "message_delta", "content": html.escape(tail)})
 
         reasoning = "".join(reasoning_parts)
         content = "".join(content_parts)

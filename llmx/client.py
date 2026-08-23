@@ -13,6 +13,68 @@ _STREAM_EOF = object()
 
 _TRUNCATION_MARKER = "[earlier messages truncated to fit the context window]"
 
+_HARNESS_TAGS = (("<system-reminder>", "</system-reminder>"),)
+
+
+class StreamFilter:
+    """Suppresses harness-injected wrapper blocks (e.g. <system-reminder>)
+    that some gateway models echo into their completions.
+
+    Tags split across SSE fragments are handled via a small rolling buffer;
+    call flush() once the stream ends to release any held-back tail.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._close_tag: str | None = None  # set while inside a suppressed block
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+        self._buf += text
+        out: list[str] = []
+        while True:
+            if self._close_tag is not None:
+                end = self._buf.find(self._close_tag)
+                if end == -1:
+                    keep = min(len(self._close_tag) - 1, len(self._buf))
+                    self._buf = self._buf[len(self._buf) - keep :] if keep else ""
+                    return "".join(out)
+                self._buf = self._buf[end + len(self._close_tag) :]
+                self._close_tag = None
+                continue
+
+            matched_open = None
+            for open_tag, close_tag in _HARNESS_TAGS:
+                idx = self._buf.find(open_tag)
+                if idx != -1:
+                    matched_open = (open_tag, close_tag)
+                    out.append(self._buf[:idx])
+                    self._buf = self._buf[idx + len(open_tag) :]
+                    self._close_tag = close_tag
+                    break
+            if matched_open is None:
+                break
+        hold = 0
+        for open_tag, _ in _HARNESS_TAGS:
+            for size in range(1, len(open_tag)):
+                if self._buf.endswith(open_tag[:size]):
+                    hold = max(hold, size)
+        emit = len(self._buf) - hold
+        if emit > 0:
+            out.append(self._buf[:emit])
+            self._buf = self._buf[emit:]
+        return "".join(out)
+
+    def flush(self) -> str:
+        if self._close_tag is not None:
+            # Unterminated block at end of stream: discard everything held.
+            self._buf = ""
+            self._close_tag = None
+            return ""
+        rest, self._buf = self._buf, ""
+        return rest
+
 
 def truncate_history(messages: list[dict]) -> list[dict]:
     """Drop oldest whole turns (assistant+its tool results stay together) until
@@ -194,6 +256,8 @@ class LLMClient:
         reasoning_len = 0
         reasoning_len_flushed = 0
         reasoning_pending_ends_nl = True
+        reasoning_filter = StreamFilter()
+        content_filter = StreamFilter()
 
         def flush_thinking() -> None:
             nonlocal reasoning_len_flushed, reasoning_pending_ends_nl
@@ -208,6 +272,7 @@ class LLMClient:
 
         def append_thinking(fragment: str) -> None:
             nonlocal reasoning_len, reasoning_len_flushed, reasoning_pending_ends_nl
+            fragment = reasoning_filter.feed(fragment)
             if not Config.thinking_enabled() or not fragment:
                 return
             if reasoning_len == reasoning_len_flushed:
@@ -221,6 +286,9 @@ class LLMClient:
             Log.stderr(fragment, end="", flush=True)
 
         def append_content(fragment: str) -> None:
+            if not fragment:
+                return
+            fragment = content_filter.feed(fragment)
             if not fragment:
                 return
             if reasoning_parts:
@@ -300,6 +368,17 @@ class LLMClient:
                     entry["function"]["arguments"] += fn.get("arguments", "") or ""
         finally:
             response.close()
+
+        # Release any text held back by the harness-artifact filters.
+        tail = reasoning_filter.flush()
+        if tail:
+            reasoning_parts.append(tail)
+            reasoning_len += len(tail)
+            Log.stderr(tail, end="", flush=True)
+        tail = content_filter.flush()
+        if tail:
+            content_parts.append(tail)
+            Log.stdout(tail, end="", flush=True)
 
         content = "".join(content_parts)
         if content and not content.endswith("\n"):
