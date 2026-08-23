@@ -35,7 +35,7 @@ async def request_with_retries(
     None if every attempt raised an exception. Sleeps delay*attempt between tries.
 
     With fail_fast, stops retrying when two attempts return the same
-    (status, body-prefix) — a deterministic error will not heal on retry.
+    (status, body-prefix); a deterministic error will not heal on retry.
     """
     if retriable is None:
 

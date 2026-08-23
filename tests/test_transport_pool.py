@@ -134,7 +134,7 @@ class TransportPoolTest(unittest.TestCase):
                 resp.close()
 
         run(consume_and_close())
-        # Even fully-drained streams are discarded — cannot prove consumption
+        # Even fully-drained streams are discarded: cannot prove consumption
         # cheaply, and a poisoned pooled connection costs more than a handshake.
         idle = transport._pool.get(("http", "127.0.0.1", self.port), [])
         self.assertEqual(idle, [])
