@@ -148,8 +148,6 @@ class LLMClient:
             "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            # No keep-alive: retries must rotate load-balancer backends.
-            "Connection": "close",
         }
 
         while True:
@@ -157,12 +155,15 @@ class LLMClient:
             msg = LLMClient.body(messages=messages)
 
             def send(msg=msg) -> Awaitable[Response]:
+                # reuse=False: fresh dial per request so retries rotate
+                # load-balancer backends instead of pinning one.
                 return AsyncHttp.post(
                     os.environ["LLM_HOST"],
                     headers=headers,
                     data=json.dumps(msg),
                     stream=Config.is_stream(),
                     timeout=Config.LLM_TIMEOUT,
+                    reuse=False,
                 )
 
             def log_failure(text: str) -> None:

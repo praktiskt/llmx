@@ -117,8 +117,6 @@ async def summarize(
         headers = {
             "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
             "Content-Type": "application/json",
-            # No keep-alive on gateway traffic: retries must rotate backends.
-            "Connection": "close",
         }
 
         async with semaphore:
@@ -128,6 +126,7 @@ async def summarize(
                     headers=headers,
                     json=payload,
                     timeout=Config.LLM_TIMEOUT,
+                    reuse=False,
                 ),
                 attempts=5,
                 fail_fast=True,

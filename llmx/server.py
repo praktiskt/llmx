@@ -565,6 +565,12 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
                 )
             elif not reasoning:
                 logger.warning("Model returned empty response (no content/reasoning)")
+                yield _sse(
+                    {
+                        "type": "message",
+                        "content": "Error: model returned an empty response. Try again.",
+                    }
+                )
             return
 
         assistant: dict = {

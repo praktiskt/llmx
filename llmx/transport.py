@@ -183,7 +183,7 @@ def _discard_connection(conn: http.client.HTTPConnection) -> None:
         pass
 
 
-def _sync_request(method: str, url: str, **kwargs):
+def _sync_request(method: str, url: str, reuse: bool = True, **kwargs):
     parsed = urlparse(url)
 
     headers = {"User-Agent": DEFAULT_USER_AGENT}
@@ -250,7 +250,7 @@ def _sync_request(method: str, url: str, **kwargs):
 
             data = resp.read()
             status = resp.status
-            _discard_or_release(conn, resp)
+            _discard_or_release(conn, resp, release=reuse)
             return Response(io.BytesIO(data), data, status_code=status)
         except Exception:
             _discard_connection(conn)
@@ -260,10 +260,12 @@ def _sync_request(method: str, url: str, **kwargs):
 
 
 def _discard_or_release(
-    conn: http.client.HTTPConnection, resp: http.client.HTTPResponse
+    conn: http.client.HTTPConnection,
+    resp: http.client.HTTPResponse,
+    release: bool = True,
 ):
     try:
-        keep_alive = not resp.will_close and conn.sock is not None
+        keep_alive = release and not resp.will_close and conn.sock is not None
     except Exception:
         keep_alive = False
     if keep_alive:

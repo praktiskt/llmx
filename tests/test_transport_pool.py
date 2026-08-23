@@ -94,6 +94,21 @@ class TransportPoolTest(unittest.TestCase):
         idle = transport._pool.get(("http", "127.0.0.1", self.port), [])
         self.assertEqual(len(idle), 1)
 
+    def test_reuse_false_discards_connection(self):
+        run(AsyncHttp.get(f"{self.base_url()}/final", timeout=5, reuse=False))
+        idle = transport._pool.get(("http", "127.0.0.1", self.port), [])
+        self.assertEqual(idle, [])
+        run(
+            AsyncHttp.post(
+                f"{self.base_url()}/final",
+                json={"a": 1},
+                timeout=5,
+                reuse=False,
+            )
+        )
+        idle = transport._pool.get(("http", "127.0.0.1", self.port), [])
+        self.assertEqual(idle, [])
+
     def test_streaming_iter_lines(self):
         async def consume():
             resp = await AsyncHttp.get(
