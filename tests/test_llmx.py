@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -697,6 +699,132 @@ class LocalFilesTest(unittest.TestCase):
         self.assertIn("paths=[...]", Config.get_system_prompt())
         os.environ["LLM_LOCAL_FILES"] = "false"
         self.assertNotIn("paths=[...]", Config.get_system_prompt())
+
+
+class InteractiveTest(unittest.TestCase):
+    def setUp(self):
+        self._saved = {
+            k: os.environ.get(k)
+            for k in (
+                "LLM_INTERACTIVE",
+                "LLM_RESPONSE_FORMAT",
+                "LLM_MODEL",
+                "LLM_API_KEY",
+                "LLM_HOST",
+                "LLM_TOOLS",
+            )
+        }
+        os.environ.update(
+            LLM_RESPONSE_FORMAT="json_object",
+            LLM_MODEL="m",
+            LLM_API_KEY="k",
+            LLM_HOST="http://h",
+            LLM_TOOLS="",
+        )
+        from llmx import client as client_mod
+
+        self.client_mod = client_mod
+        self._old_stdin = sys.stdin
+
+    def tearDown(self):
+        sys.stdin = self._old_stdin
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    class _FakeStdin:
+        def __init__(self, lines):
+            import io
+
+            self._buf = io.StringIO("".join(line + "\n" for line in lines))
+
+        def isatty(self):
+            return True
+
+        def readline(self):
+            return self._buf.readline()
+
+    def test_flag_default_off(self):
+        os.environ.pop("LLM_INTERACTIVE", None)
+        self.assertFalse(Config.interactive_enabled())
+
+    def test_flag_env_toggle(self):
+        os.environ["LLM_INTERACTIVE"] = "true"
+        self.assertTrue(Config.interactive_enabled())
+        os.environ["LLM_INTERACTIVE"] = "false"
+        self.assertFalse(Config.interactive_enabled())
+
+    def test_next_user_message_reads_and_skips_blanks(self):
+        sys.stdin = self._FakeStdin(["", "  ", "hello"])
+        out = run(self.client_mod.LLMClient._next_user_message())
+        self.assertEqual(out, "hello")
+
+    def test_next_user_message_quit_commands(self):
+        for cmd in ["quit", "exit", "/quit", "/exit"]:
+            sys.stdin = self._FakeStdin([cmd])
+            self.assertIsNone(run(self.client_mod.LLMClient._next_user_message()), cmd)
+
+    def test_next_user_message_eof(self):
+        sys.stdin = self._FakeStdin([])
+        self.assertIsNone(run(self.client_mod.LLMClient._next_user_message()))
+
+    def _run_stream(self, argv, contents):
+        """Patch AsyncHttp.post; returns list of request bodies."""
+        calls = []
+
+        async def fake_post(url, **kwargs):
+            calls.append(json.loads(kwargs["data"]))
+
+            class Resp:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    return {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": contents.pop(0) if contents else "x",
+                                }
+                            }
+                        ]
+                    }
+
+            return Resp()
+
+        http = self.client_mod.AsyncHttp
+        original_post = http.post
+        http.post = staticmethod(fake_post)
+        try:
+            run(self.client_mod.LLMClient.stream(argv))
+        finally:
+            http.post = original_post
+        return calls
+
+    def test_non_interactive_single_shot(self):
+        os.environ["LLM_INTERACTIVE"] = "false"
+        calls = self._run_stream(["hi"], ["one"])
+        self.assertEqual(len(calls), 1)
+
+    def test_interactive_continues_conversation(self):
+        os.environ["LLM_INTERACTIVE"] = "true"
+        sys.stdin = self._FakeStdin(["follow-up", "quit"])
+        calls = self._run_stream(["hi"], ["one", "two"])
+        self.assertEqual(len(calls), 2)
+        roles = [m["role"] for m in calls[1]["messages"]]
+        self.assertEqual(roles, ["system", "user", "assistant", "user"])
+        self.assertEqual(calls[1]["messages"][2]["content"], "one")
+        self.assertEqual(calls[1]["messages"][3]["content"], "follow-up")
+
+    def test_interactive_first_input_when_no_args(self):
+        os.environ["LLM_INTERACTIVE"] = "true"
+        sys.stdin = self._FakeStdin(["first prompt", "quit"])
+        calls = self._run_stream([], ["answer"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["messages"][1]["content"], "first prompt")
 
 
 if __name__ == "__main__":

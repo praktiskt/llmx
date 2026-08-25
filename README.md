@@ -49,4 +49,7 @@ make test    # stdlib unittest
 accept `paths=[...]` relative to the current directory — globs allowed — and
 `list_files` lists local files by glob/regex; paths cannot be absolute,
 contain `..`, or resolve outside the cwd, symlinks included),
-`LLM_LOCAL_MAX_FILES` (100), `LLM_LOCAL_MAX_FILE_BYTES` (2000000)
+`LLM_LOCAL_MAX_FILES` (100), `LLM_LOCAL_MAX_FILE_BYTES` (2000000),
+`LLM_INTERACTIVE` (False; when true and stdin is a tty, keeps reading new user
+lines after each answer as one continuing conversation — Ctrl-D, `quit`, or
+`exit` ends the session)

@@ -68,6 +68,10 @@ class Config:
         return os.environ.get("LLM_LOCAL_FILES", "False").lower() == "true"
 
     @staticmethod
+    def interactive_enabled() -> bool:
+        return os.environ.get("LLM_INTERACTIVE", "False").lower() == "true"
+
+    @staticmethod
     def get_system_prompt() -> str:
         today = date.today().isoformat()
         prompt = (

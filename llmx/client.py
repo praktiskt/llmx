@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 import threading
 from collections.abc import Awaitable
 
@@ -134,7 +135,28 @@ class LLMClient:
         return d
 
     @staticmethod
+    async def _next_user_message() -> str | None:
+        """Prompt until a non-blank tty line; None on EOF or quit command."""
+        while True:
+            Log.stderr(Color.dim("> "), end="", flush=True)
+            line = await asyncio.to_thread(sys.stdin.readline)
+            if not line:
+                return None
+            text = line.strip()
+            if text.lower() in {"exit", "quit", "/exit", "/quit"}:
+                return None
+            if text:
+                return text
+
+    @staticmethod
     async def stream(prompt: list[str]) -> None:
+        prompt_text = " ".join(prompt).strip()
+        if not prompt_text and Config.interactive_enabled() and sys.stdin.isatty():
+            first = await LLMClient._next_user_message()
+            if first is None:
+                return
+            prompt_text = first
+
         messages = [
             {
                 "role": "system",
@@ -142,7 +164,7 @@ class LLMClient:
                     "LLM_SYSTEM_PROMPT", Config.get_system_prompt()
                 ),
             },
-            {"role": "user", "content": " ".join(prompt)},
+            {"role": "user", "content": prompt_text},
         ]
 
         headers = {
@@ -214,7 +236,17 @@ class LLMClient:
                 content = message.get("content", "")
                 if content and not printed:
                     Log.stdout(content)
-                return
+                if not Config.interactive_enabled() or not sys.stdin.isatty():
+                    return
+                message.pop("reasoning_content", None)
+                message.pop("reasoning", None)
+                message.pop("provider_specific_fields", None)
+                messages.append(message)
+                user_line = await LLMClient._next_user_message()
+                if user_line is None:
+                    return
+                messages.append({"role": "user", "content": user_line})
+                continue
 
             message.pop("reasoning_content", None)
             message.pop("reasoning", None)
