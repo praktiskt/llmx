@@ -38,18 +38,36 @@ make test    # stdlib unittest
 
 ## Env (optional)
 
-`LLM_TOOLS` (unset = all tools, empty = none, else comma-separated allowlist:
-`fetch,search,read_file,grep_file,summarize,list_files`), `LLM_TEMPERATURE` (0.1),
-`LLM_STREAM` (True), `LLM_SHOW_THINKING` (True),
-`LLM_MAX_CONTEXT_CHARS` (200000), `LLM_MARKDOWN_FETCH_PROXY`,
-`_SEARCH_PROXY`, `_IMAGE_SEARCH_PROXY`, `LLM_FETCH_ALLOW_PRIVATE` (False),
-`LLM_SUMMARIZE_CONCURRENCY` (4), `LLM_SESSION_TTL` (3600),
-`LLM_MAX_SESSIONS` (200),
-`LLM_LOCAL_FILES` (False; when true, `read_file`, `grep_file`, and `summarize`
-accept `paths=[...]` relative to the current directory — globs allowed — and
-`list_files` lists local files by glob/regex; paths cannot be absolute,
-contain `..`, or resolve outside the cwd, symlinks included),
-`LLM_LOCAL_MAX_FILES` (100), `LLM_LOCAL_MAX_FILE_BYTES` (2000000),
-`LLM_INTERACTIVE` (False; when true and stdin is a tty, keeps reading new user
-lines after each answer as one continuing conversation — Ctrl-D, `quit`, or
-`exit` ends the session)
+Core:
+
+- `LLM_TOOLS` — unset = all tools, empty = none, else comma-separated allowlist: `fetch,search,read_file,grep_file,summarize,list_files`
+- `LLM_TEMPERATURE` (0.1), `LLM_STREAM` (True), `LLM_RESPONSE_FORMAT` (unset; setting it disables streaming)
+- `LLM_SHOW_THINKING` (True), `LLM_MAX_CONTEXT_CHARS` (200000)
+- `LLM_SYSTEM_PROMPT` — overrides the built-in tool-usage prompt
+- `NO_COLOR` / `LLM_DISABLE_COLOR_OUTPUT` (False) — disable ANSI colors
+- `LOG_LEVEL` (WARNING for CLI, INFO for server)
+
+Network / tools:
+
+- `LLM_MARKDOWN_FETCH_PROXY`, `LLM_MARKDOWN_SEARCH_PROXY`, `LLM_MARKDOWN_IMAGE_SEARCH_PROXY`
+- `LLM_FETCH_ALLOW_PRIVATE` (False) — allow fetch to private/loopback hosts
+- `LLM_SUMMARIZE_CONCURRENCY` (4)
+
+Server:
+
+- `LLM_BIND_ADDRESS` (0.0.0.0), `LLM_SERVER_PORT` (8080)
+- `LLM_SESSION_TTL` (3600), `LLM_MAX_SESSIONS` (200)
+
+Local files:
+
+- `LLM_LOCAL_FILES` (False) — when true, `read_file`, `grep_file`, and `summarize`
+  accept `paths=[...]` relative to the current directory (globs allowed) and
+  `list_files` lists local files by glob/regex; paths cannot be absolute,
+  contain `..`, or resolve outside the cwd, symlinks included
+- `LLM_LOCAL_MAX_FILES` (100), `LLM_LOCAL_MAX_FILE_BYTES` (2000000)
+
+Interactive:
+
+- `LLM_INTERACTIVE` (False) — when true and stdin is a tty, keeps reading new user
+  lines after each answer as one continuing conversation; Ctrl-D, `quit`, or
+  `exit` ends the session
