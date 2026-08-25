@@ -99,7 +99,11 @@ class _PooledStream:
 
 class Response:
     def __init__(
-        self, fp, preloaded: bytes | None = None, status_code: int | None = None
+        self,
+        fp,
+        preloaded: bytes | None = None,
+        status_code: int | None = None,
+        headers: dict | None = None,
     ):
         self._fp = fp
         self._content = preloaded
@@ -108,6 +112,7 @@ class Response:
             if status_code is not None
             else getattr(fp, "status", None) or getattr(fp, "code", 0)
         )
+        self.headers: dict = {k.lower(): v for k, v in (headers or {}).items()}
         self.encoding: str | None = None
 
     @property
@@ -246,12 +251,16 @@ def _sync_request(method: str, url: str, reuse: bool = True, **kwargs):
                 continue
 
             if stream:
-                return Response(_PooledStream(conn, resp), status_code=resp.status)
+                hdrs = {k.lower(): v for k, v in resp.headers.items()}
+                return Response(
+                    _PooledStream(conn, resp), status_code=resp.status, headers=hdrs
+                )
 
             data = resp.read()
             status = resp.status
+            hdrs = {k.lower(): v for k, v in raw_headers.items()} if raw_headers else {}
             _discard_or_release(conn, resp, release=reuse)
-            return Response(io.BytesIO(data), data, status_code=status)
+            return Response(io.BytesIO(data), data, status_code=status, headers=hdrs)
         except Exception:
             _discard_connection(conn)
             raise

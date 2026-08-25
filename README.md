@@ -4,7 +4,7 @@ LLM assistant with tool use: dependency-free CLI + small web chat server.
 
 - **CLI** (`dist/llm`): standalone zipapp, pure stdlib, runs on any Linux with `python3`
 - **Server** (`llmx/server.py`): FastAPI web UI, SSE-streamed thinking + answers
-- **Tools**: fetch URLs (cached as 6-char file_ids), web search, read/grep cached docs, summarize via sub-requests
+- **Tools**: fetch URLs and web search (results stored as `memory://<id>`), read/grep/summarize any mix of `memory://` docs and local files, list local files, plus MCP tools (`server__tool` when `LLM_MCP_SERVERS` is set)
 - **Resilience**: 5x retry on all >=400/network errors, keep-alive connection pool, context-window truncation, harness-artifact filtering
 
 ## CLI
@@ -61,9 +61,10 @@ Server:
 Local files:
 
 - `LLM_LOCAL_FILES` (False) — when true, `read_file`, `grep_file`, and `summarize`
-  accept `paths=[...]` relative to the current directory (globs allowed) and
-  `list_files` lists local files by glob/regex; paths cannot be absolute,
-  contain `..`, or resolve outside the cwd, symlinks included
+  accept `sources=[...]` mixing `memory://<id>` docs with local paths relative to
+  the current directory (globs allowed); `list_files` lists local files by
+  glob/regex; paths cannot be absolute, contain `..`, or resolve outside the
+  cwd, symlinks included
 - `LLM_LOCAL_MAX_FILES` (100), `LLM_LOCAL_MAX_FILE_BYTES` (2000000)
 
 Interactive:
@@ -71,3 +72,19 @@ Interactive:
 - `LLM_INTERACTIVE` (False) — when true and stdin is a tty, keeps reading new user
   lines after each answer as one continuing conversation; Ctrl-D, `quit`, or
   `exit` ends the session
+
+MCP servers (zero extra dependencies):
+
+- `LLM_MCP_SERVERS` (unset) — JSON object mapping server name → config. Tools
+  appear as `<server>__<tool>` (filtered by `LLM_TOOLS` like builtins). Example:
+  ```json
+  {
+    "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
+    "remote": {"url": "http://localhost:8001/mcp", "headers": {"Authorization": "Bearer x"}}
+  }
+  ```
+  stdio: `command` (required), `args` (optional list), `env` (optional dict
+  merged with process env), `cwd` (optional). http: `url` (required),
+  `headers` (optional dict). Large MCP results are auto-stored as
+  `memory://<id>` like `fetch`. Server names must match `[a-zA-Z0-9_-]{1,32}`.
+- `LLM_MCP_TIMEOUT` (30) — seconds for MCP handshake and tool calls

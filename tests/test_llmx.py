@@ -522,7 +522,9 @@ class ToolsAllowlistTest(unittest.TestCase):
     def test_execute_allows_enabled_tool(self):
         Cache.store("abc123", "hello")
         os.environ["LLM_TOOLS"] = "read_file"
-        result = asyncio.run(Tools.execute("read_file", {"file_ids": ["abc123"]}))
+        result = asyncio.run(
+            Tools.execute("read_file", {"sources": ["memory://abc123"]})
+        )
         self.assertIn("hello", result)
 
 
@@ -626,22 +628,51 @@ class LocalFilesTest(unittest.TestCase):
     def test_tools_read_merge_and_disabled(self):
         Cache.store("abc123", "cached line")
         result = asyncio.run(
-            Tools.execute(
-                "read_file", {"file_ids": ["abc123"], "paths": ["src/main.py"]}
-            )
+            Tools.execute("read_file", {"sources": ["memory://abc123", "src/main.py"]})
         )
         self.assertIn("File abc123", result)
         self.assertIn("File src/main.py", result)
 
         os.environ["LLM_LOCAL_FILES"] = "false"
-        result = asyncio.run(Tools.execute("read_file", {"paths": ["src/main.py"]}))
+        result = asyncio.run(Tools.execute("read_file", {"sources": ["src/main.py"]}))
         self.assertIn("disabled (LLM_LOCAL_FILES)", result)
+
+    def test_sources_reject_legacy_keys(self):
+        for legacy in ({"file_ids": ["abc123"]}, {"paths": ["x.txt"]}):
+            result = asyncio.run(Tools.execute("read_file", legacy))
+            self.assertIn("were removed", result)
+            self.assertIn("sources=", result)
+
+    def test_sources_unknown_scheme(self):
+        result = asyncio.run(
+            Tools.execute("read_file", {"sources": ["https://example.com/x"]})
+        )
+        self.assertIn("unsupported scheme 'https://'", result)
+        self.assertIn("use fetch for URLs", result)
+
+    def test_sources_bad_memory_id(self):
+        result = asyncio.run(
+            Tools.execute("read_file", {"sources": ["memory://BAD-ID!"]})
+        )
+        self.assertIn("invalid id", result)
+        self.assertIn("memory://<id>", result)
+
+    def test_docker_named_source_vs_memory(self):
+        Cache.store("docker", "cached content here")
+        via_memory = asyncio.run(
+            Tools.execute("read_file", {"sources": ["memory://docker"]})
+        )
+        via_path = asyncio.run(Tools.execute("read_file", {"sources": ["docker"]}))
+        self.assertIn("cached content here", via_memory)
+        self.assertNotIn("not a file_id", via_memory)
+        self.assertIn("not a file_id", via_path)
+        self.assertNotIn("cached content here", via_path)
 
     def test_tools_teaching_error_when_neither_source(self):
         result = asyncio.run(Tools.execute("read_file", {}))
-        self.assertIn("provide file_ids", result)
+        self.assertIn("provide sources=", result)
         result = asyncio.run(Tools.execute("grep_file", {}))
-        self.assertIn("provide file_ids", result)
+        self.assertIn("provide sources=", result)
 
     def test_tools_list_files(self):
         result = asyncio.run(Tools.execute("list_files", {"regex": r"\.py$"}))
@@ -671,7 +702,12 @@ class LocalFilesTest(unittest.TestCase):
         tools_mod.request_with_retries = fake_retry
         try:
             result = asyncio.run(
-                tools_mod.summarize([], ["d1"], paths=["src/main.py", "missing.txt"])
+                tools_mod.summarize(
+                    [],
+                    ["src/main.py", "missing.txt"],
+                    [],
+                    ["d1"],
+                )
             )
         finally:
             tools_mod.request_with_retries = original
@@ -683,22 +719,63 @@ class LocalFilesTest(unittest.TestCase):
 
         self.assertIn("File src/main.py:", result)
         self.assertIn("SUM", result)
-        self.assertIn("File local files:", result)
+        self.assertIn("File sources:", result)
         self.assertIn("missing.txt not found", result)
 
-    def test_schema_includes_list_files_and_paths(self):
+    def test_summarize_with_memory_ids(self):
+        from llmx import tools as tools_mod
+
+        class FakeResp:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"choices": [{"message": {"content": "MSUM"}}]}
+
+        async def fake_retry(factory, **kwargs):
+            return FakeResp()
+
+        saved_env = {
+            k: os.environ.get(k) for k in ("LLM_MODEL", "LLM_API_KEY", "LLM_HOST")
+        }
+        os.environ.update(LLM_MODEL="m", LLM_API_KEY="k", LLM_HOST="http://h")
+        Cache.store("abc123", "cached body for summary")
+        original = tools_mod.request_with_retries
+        tools_mod.request_with_retries = fake_retry
+        try:
+            result = asyncio.run(tools_mod.summarize(["abc123"], [], [], ["d1"]))
+        finally:
+            tools_mod.request_with_retries = original
+            for key, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertIn("File abc123:", result)
+        self.assertIn("MSUM", result)
+
+    def test_schema_sources_replaces_legacy(self):
         names = {t["function"]["name"] for t in Tools.SCHEMA}
         self.assertIn("list_files", names)
         by_name = {t["function"]["name"]: t for t in Tools.SCHEMA}
         for tool in ("read_file", "grep_file", "summarize"):
-            props = by_name[tool]["function"]["parameters"]["properties"]
-            self.assertIn("paths", props, tool)
+            params = by_name[tool]["function"]["parameters"]
+            props = params["properties"]
+            self.assertIn("sources", props, tool)
+            self.assertNotIn("file_ids", props, tool)
+            self.assertNotIn("paths", props, tool)
 
     def test_system_prompt_conditional(self):
         os.environ["LLM_LOCAL_FILES"] = "true"
-        self.assertIn("paths=[...]", Config.get_system_prompt())
+        prompt = Config.get_system_prompt()
+        self.assertIn("sources=[...]", prompt)
+        self.assertIn("memory://", prompt)
+        self.assertIn("current working directory", prompt)
         os.environ["LLM_LOCAL_FILES"] = "false"
-        self.assertNotIn("paths=[...]", Config.get_system_prompt())
+        prompt = Config.get_system_prompt()
+        self.assertIn("sources=[...]", prompt)
+        self.assertNotIn("current working directory", prompt)
 
 
 class InteractiveTest(unittest.TestCase):

@@ -32,6 +32,15 @@ async def main() -> None:
         stream=sys.stderr,
     )
     _install_quit_handler()
+    # Start MCP servers if configured (non-blocking; tools appear once available).
+    try:
+        from .config import Config as _Cfg
+        from .mcp import get_mcp_manager as _get_mcp
+
+        if _Cfg.mcp_servers():
+            await _get_mcp()
+    except Exception as e:
+        logging.getLogger(__name__).debug("MCP startup failed: %s", e)
     prompt = [*sys.argv[1:]]
     if not sys.stdin.isatty():
         prompt.extend(["\n\n", *sys.stdin.read().splitlines()])
@@ -40,6 +49,13 @@ async def main() -> None:
     except LLMAPIError as e:
         Log.stderr(f"{Color.ERROR}[error]: {e}{Color.RESET}")
         sys.exit(1)
+    finally:
+        try:
+            from .mcp import close_mcp as _close
+
+            await _close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

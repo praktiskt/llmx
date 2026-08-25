@@ -32,8 +32,8 @@ class Cache:
                         wrapped_lines.append(chunk[:last_space])
                         start += last_space + 1
                     else:
-                        wrapped_lines.append(line[start : start + 200])
-                        break
+                        wrapped_lines.append(chunk)
+                        start += 200
         Cache._storage[file_id] = "\n".join(wrapped_lines)
         Cache._storage.move_to_end(file_id)
         while len(Cache._storage) > Cache.MAX_ENTRIES:

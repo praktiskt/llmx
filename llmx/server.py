@@ -194,6 +194,29 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.on_event("startup")
+async def _mcp_startup() -> None:
+    from .config import Config as _Cfg
+
+    if _Cfg.mcp_servers():
+        try:
+            from .mcp import get_mcp_manager
+
+            await get_mcp_manager()
+        except Exception as e:
+            logger.warning("MCP startup failed: %s", e)
+
+
+@app.on_event("shutdown")
+async def _mcp_shutdown() -> None:
+    try:
+        from .mcp import close_mcp
+
+        await close_mcp()
+    except Exception:
+        pass
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.monotonic()
@@ -410,6 +433,16 @@ async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str
 
 
 async def stream_response(session: Session, request: Request) -> AsyncGenerator[str]:
+    # Ensure MCP manager is started (lazy, in case startup event was missed).
+    try:
+        from .config import Config as _Cfg
+
+        if _Cfg.mcp_servers():
+            from .mcp import get_mcp_manager
+
+            await get_mcp_manager()
+    except Exception:
+        pass
     headers = {
         "Authorization": f"Bearer {os.environ['LLM_API_KEY']}",
         "Content-Type": "application/json",

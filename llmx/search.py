@@ -176,7 +176,9 @@ async def search(
         if fid is None:
             lines.append(f"Query '{q}': search failed, do not read_file this query")
         else:
-            lines.append(f"Query '{q}' stored in file_id={fid}")
+            lines.append(f"Query '{q}' stored in memory://{fid}")
     lines.append("")
-    lines.append("Use read_file, grep_file or summarize to get the content.")
+    lines.append(
+        "Use read_file, grep_file or summarize with that memory:// id to get the content."
+    )
     return "\n".join(lines)

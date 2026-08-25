@@ -15,6 +15,15 @@ from .localfs import read_entries as _localfs_read_entries
 from .search import search as _search
 from .transport import AsyncHttp, request_with_retries
 
+try:
+    from .mcp import get_mcp_schemas_sync, mcp_call
+except ImportError:
+
+    def get_mcp_schemas_sync() -> list:  # type: ignore[no-redef]
+        return []
+
+    mcp_call = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,14 +94,25 @@ def parse_tool_args(args_str: str) -> dict:
 
 async def summarize(
     file_ids: list[str],
+    local_paths: list[str],
+    resolve_errors: list[str],
     directives: list[str],
     max_length: int = 1000,
     offset: int | None = None,
     limit: int | None = None,
-    paths: list[str] | None = None,
 ) -> str:
     concurrency = int(os.environ.get("LLM_SUMMARIZE_CONCURRENCY", "4"))
     semaphore = asyncio.Semaphore(concurrency)
+
+    def _slice(content: str) -> str:
+        if offset is not None or limit is not None:
+            lines = content.splitlines()
+            if offset is not None and offset > 0:
+                lines = lines[offset - 1 :]
+            if limit is not None and limit > 0:
+                lines = lines[:limit]
+            return "\n".join(lines)
+        return content
 
     async def summarize_task(task: tuple) -> tuple:
         file_id, directive, content = task
@@ -184,54 +204,30 @@ async def summarize(
         return (file_id, directive, summary)
 
     tasks = []
-    for file_id in file_ids:
-        validation_error = Config.validate_file_id(file_id)
-        if validation_error:
-            tasks.append((file_id, "", f"Error: {validation_error}"))
-            continue
+    for error in resolve_errors:
+        tasks.append(("sources", "", error))
 
+    for file_id in file_ids:
         content = Cache.get(file_id)
         if content is None:
             tasks.append((file_id, "", f"Error: file {file_id} not found"))
             continue
-
-        if offset is not None or limit is not None:
-            lines = content.splitlines()
-            if offset is not None and offset > 0:
-                lines = lines[offset - 1 :]
-            if limit is not None and limit > 0:
-                lines = lines[:limit]
-            content = "\n".join(lines)
-
+        content = _slice(content)
         for directive in directives:
             tasks.append((file_id, directive, content))
 
-    if paths:
-        if Config.local_files_enabled():
-            pairs = await asyncio.to_thread(_localfs_contents, paths)
-            local_errors = [text for label, text in pairs if label is None]
-            for key, text in pairs:
-                if key is None:
-                    continue
-                if offset is not None or limit is not None:
-                    lines = text.splitlines()
-                    if offset is not None and offset > 0:
-                        lines = lines[offset - 1 :]
-                    if limit is not None and limit > 0:
-                        lines = lines[:limit]
-                    text = "\n".join(lines)
-                for directive in directives:
-                    tasks.append((key, directive, text))
-            if local_errors:
-                tasks.append(("local files", "", "\n\n".join(local_errors)))
-        else:
-            tasks.append(
-                (
-                    "local files",
-                    "",
-                    "Error: local file access is disabled (LLM_LOCAL_FILES)",
-                )
-            )
+    if local_paths:
+        pairs = await asyncio.to_thread(_localfs_contents, local_paths)
+        local_errors = []
+        for key, text in pairs:
+            if key is None:
+                local_errors.append(text)
+                continue
+            content = _slice(text)
+            for directive in directives:
+                tasks.append((key, directive, content))
+        if local_errors:
+            tasks.append(("sources", "", "\n\n".join(local_errors)))
 
     async def run_task(task: tuple) -> tuple:
         return await summarize_task(task)
@@ -337,30 +333,25 @@ class Tools:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read content from one or more cached files (file_id from fetch) and/or local files (paths relative to the current directory, if local access is enabled)",
+                "description": "Read content from one or more sources: cached documents (memory://<id> from fetch/search) and/or local files (paths relative to the current directory, if local access is enabled)",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "file_ids": {
+                        "sources": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "List of 6-character lowercase alphanumeric IDs returned by fetch (e.g., ['abc123', 'xyz789']). Do NOT invent file_ids.",
-                        },
-                        "paths": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Local file paths or globs relative to the current directory (e.g., ['src/main.py', 'docs/*.md']). Only available when local file access is enabled.",
+                            "description": "Sources to read, e.g. ['memory://abc123', 'src/main.py', 'docs/*.md']. memory:// ids come from fetch/search results; local paths must be relative to the current directory.",
                         },
                         "offset": {
                             "type": "integer",
-                            "description": "Start line per file (1-indexed, optional)",
+                            "description": "Start line per source (1-indexed, optional)",
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Max lines per file to return (optional)",
+                            "description": "Max lines per source to return (optional)",
                         },
                     },
-                    "required": [],
+                    "required": ["sources"],
                 },
             },
         },
@@ -368,19 +359,14 @@ class Tools:
             "type": "function",
             "function": {
                 "name": "summarize",
-                "description": "Summarize one or more cached files (file_id from fetch) and/or local files according to multiple directives",
+                "description": "Summarize one or more sources (memory://<id> from fetch/search, and/or local files) according to multiple directives",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "file_ids": {
+                        "sources": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "List of 6-character lowercase alphanumeric IDs returned by fetch (e.g., ['abc123', 'xyz789']). Do NOT invent file_ids.",
-                        },
-                        "paths": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Local file paths or globs relative to the current directory. Only available when local file access is enabled.",
+                            "description": "Sources to summarize, e.g. ['memory://abc123', 'src/main.py']. memory:// ids come from fetch/search results; local paths must be relative to the current directory.",
                         },
                         "directives": {
                             "type": "array",
@@ -393,14 +379,14 @@ class Tools:
                         },
                         "offset": {
                             "type": "integer",
-                            "description": "Start line per file for summarization (1-indexed, optional)",
+                            "description": "Start line per source for summarization (1-indexed, optional)",
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Max lines per file to summarize (optional)",
+                            "description": "Max lines per source to summarize (optional)",
                         },
                     },
-                    "required": ["file_ids", "directives"],
+                    "required": ["sources", "directives"],
                 },
             },
         },
@@ -408,19 +394,14 @@ class Tools:
             "type": "function",
             "function": {
                 "name": "grep_file",
-                "description": "Search for a pattern in one or more cached files (file_id from fetch) and/or local files (paths relative to the current directory, if local access is enabled)",
+                "description": "Search for a pattern in one or more sources: cached documents (memory://<id> from fetch/search) and/or local files (paths relative to the current directory, if local access is enabled)",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "file_ids": {
+                        "sources": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "List of 6-character lowercase alphanumeric IDs returned by fetch (e.g., ['abc123', 'xyz789']). Do NOT invent file_ids.",
-                        },
-                        "paths": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Local file paths or globs relative to the current directory (e.g., ['src/main.py', 'src/**/*.py']). Only available when local file access is enabled.",
+                            "description": "Sources to search, e.g. ['memory://abc123', 'src/**/*.py']. memory:// ids come from fetch/search results; local paths must be relative to the current directory.",
                         },
                         "pattern": {
                             "type": "string",
@@ -439,7 +420,7 @@ class Tools:
                             "description": "Lines of context before/after match (default 0)",
                         },
                     },
-                    "required": ["pattern"],
+                    "required": ["sources", "pattern"],
                 },
             },
         },
@@ -475,7 +456,7 @@ class Tools:
         def store_and_return(content: str) -> str:
             file_id = Cache.new_id()
             Cache.store(file_id, content)
-            return f'Stored as {file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (file_id="{file_id}")'
+            return f"Stored as memory://{file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (memory://{file_id})"
 
         proxy = Config.markdown_fetch_proxy()
         if proxy:
@@ -526,11 +507,16 @@ class Tools:
 
     @staticmethod
     def schema() -> list[dict]:
-        """SCHEMA filtered down to Config.allowed_tools()."""
+        """SCHEMA filtered down to Config.allowed_tools(), including MCP tools."""
+        try:
+            mcp_schemas = get_mcp_schemas_sync()
+        except Exception:
+            mcp_schemas = []
+        all_schemas = Tools.SCHEMA + mcp_schemas
         allowed = Config.allowed_tools()
         if allowed is None:
-            return Tools.SCHEMA
-        return [tool for tool in Tools.SCHEMA if tool["function"]["name"] in allowed]
+            return all_schemas
+        return [tool for tool in all_schemas if tool["function"]["name"] in allowed]
 
     @staticmethod
     async def execute(tool_name: str, tool_args: dict) -> str:
@@ -547,6 +533,13 @@ class Tools:
         }
         handler = handlers.get(tool_name)
         if handler is None:
+            # MCP tools are prefixed server__tool
+            if (
+                "__" in tool_name
+                and mcp_call is not None
+                and Config.mcp_servers() is not None
+            ):
+                return await mcp_call(tool_name, tool_args)
             return f"Unknown tool: {tool_name}"
         return await handler(tool_args)
 
@@ -563,86 +556,121 @@ class Tools:
         )
 
     @staticmethod
-    def _local_paths(args: dict) -> list[str] | None:
-        """Paths arg if provided, else None. Empty/missing -> None."""
-        raw = args.get("paths")
-        if not raw:
-            return None
-        return Tools._as_list(raw)
-
-    @staticmethod
     def _local_disabled_error() -> str:
         return "Error: local file access is disabled (LLM_LOCAL_FILES)"
 
     @staticmethod
+    def _resolve_sources(args: dict) -> tuple[list[str], list[str], list[str]]:
+        """Split args into (cache_ids, local_paths, errors).
+
+        sources entries are memory://<id> (cache) or relative local paths/globs;
+        anything else is rejected with a teaching error.
+        """
+        if "file_ids" in args or "paths" in args:
+            return (
+                [],
+                [],
+                [
+                    "Error: file_ids/paths parameters were removed - use "
+                    "sources=['memory://<id>', 'relative/path'] instead"
+                ],
+            )
+
+        raw = args.get("sources")
+        if not raw:
+            return [], [], []
+
+        cache_ids: list[str] = []
+        local_paths: list[str] = []
+        errors: list[str] = []
+        local_enabled = Config.local_files_enabled()
+        for source in Tools._as_list(raw):
+            if not isinstance(source, str) or not source.strip():
+                errors.append("Error: empty source provided")
+                continue
+            source = source.strip()
+            if source.startswith("memory://"):
+                file_id = source[len("memory://") :]
+                error = Config.validate_file_id(file_id)
+                if error:
+                    errors.append(f"Error: {error}")
+                else:
+                    cache_ids.append(file_id)
+            elif "://" in source:
+                scheme = source.split("://", 1)[0]
+                errors.append(
+                    f"Error: unsupported scheme '{scheme}://' - use fetch for URLs; "
+                    "sources accepts memory://<id> (from fetch/search) or relative local paths"
+                )
+            elif not local_enabled:
+                errors.append(Tools._local_disabled_error())
+            else:
+                local_paths.append(source)
+        return cache_ids, local_paths, errors
+
+    @staticmethod
     async def _exec_read_file(args: dict) -> str:
-        parts = []
-        if args.get("file_ids"):
-            parts.append(
-                Cache.read(
-                    Tools._as_list(args.get("file_ids")),
+        parts: list[str] = []
+        file_ids, local_paths, errors = Tools._resolve_sources(args)
+        parts.extend(errors)
+        if file_ids:
+            parts.append(Cache.read(file_ids, args.get("offset"), args.get("limit")))
+        if local_paths:
+            parts.extend(
+                await asyncio.to_thread(
+                    _localfs_read_entries,
+                    local_paths,
                     args.get("offset"),
                     args.get("limit"),
                 )
             )
-        paths = Tools._local_paths(args)
-        if paths:
-            if not Config.local_files_enabled():
-                parts.append(Tools._local_disabled_error())
-            else:
-                parts.extend(
-                    await asyncio.to_thread(
-                        _localfs_read_entries,
-                        paths,
-                        args.get("offset"),
-                        args.get("limit"),
-                    )
-                )
         if not parts:
-            return "Error: provide file_ids (from fetch) or paths (local files, relative to the current directory)"
+            return "Error: provide sources=['memory://<id>', 'relative/path']"
         return "\n\n---\n\n".join(parts)
 
     @staticmethod
     async def _exec_summarize(args: dict) -> str:
+        file_ids, local_paths, errors = Tools._resolve_sources(args)
+        if not file_ids and not local_paths and not errors:
+            return "Error: provide sources=['memory://<id>', 'relative/path']"
         return await summarize(
-            Tools._as_list(args.get("file_ids", [])),
+            file_ids,
+            local_paths,
+            errors,
             Tools._as_list(args.get("directives", [])),
             args.get("max_length", 1000),
             args.get("offset"),
             args.get("limit"),
-            paths=Tools._local_paths(args),
         )
 
     @staticmethod
     async def _exec_grep_file(args: dict) -> str:
-        parts = []
-        if args.get("file_ids"):
+        parts: list[str] = []
+        file_ids, local_paths, errors = Tools._resolve_sources(args)
+        parts.extend(errors)
+        if file_ids:
             parts.append(
                 Cache.grep(
-                    Tools._as_list(args.get("file_ids")),
+                    file_ids,
                     args.get("pattern", ""),
                     args.get("is_regex", False),
                     args.get("ignore_case", False),
                     args.get("context", 0),
                 )
             )
-        paths = Tools._local_paths(args)
-        if paths:
-            if not Config.local_files_enabled():
-                parts.append(Tools._local_disabled_error())
-            else:
-                parts.extend(
-                    await asyncio.to_thread(
-                        _localfs_grep_entries,
-                        paths,
-                        args.get("pattern", ""),
-                        args.get("is_regex", False),
-                        args.get("ignore_case", False),
-                        args.get("context", 0),
-                    )
+        if local_paths:
+            parts.extend(
+                await asyncio.to_thread(
+                    _localfs_grep_entries,
+                    local_paths,
+                    args.get("pattern", ""),
+                    args.get("is_regex", False),
+                    args.get("ignore_case", False),
+                    args.get("context", 0),
                 )
+            )
         if not parts:
-            return "Error: provide file_ids (from fetch) or paths (local files, relative to the current directory)"
+            return "Error: provide sources=['memory://<id>', 'relative/path']"
         return "\n\n---\n\n".join(parts)
 
     @staticmethod
@@ -668,10 +696,7 @@ class Tools:
         if len(result) <= Config.MAX_TOOL_RESULT_CHARS:
             return (tool_id, result)
 
-        file_ids = args.get("file_ids", [])
-        if isinstance(file_ids, str):
-            file_ids = [file_ids]
-
+        num_sources = len(Tools._as_list(args["sources"])) if args.get("sources") else 0
         if tool_name == "read_file":
             current_limit = args.get("limit") or 50
             if current_limit > 10:
@@ -688,9 +713,8 @@ class Tools:
                     f"[Truncated from limit={current_limit} to limit={suggested_limit}]\n{result}",
                 )
 
-        num_files = len(file_ids)
         num_directives = len(args.get("directives", []))
-        total_summaries = max(1, num_files) * max(1, num_directives)
+        total_summaries = max(1, num_sources) * max(1, num_directives)
         suggested_max_length = max(500, Config.MAX_TOOL_RESULT_CHARS // total_summaries)
 
         return (
@@ -698,6 +722,6 @@ class Tools:
             f"Result too large ({len(result)} chars, max {Config.MAX_TOOL_RESULT_CHARS}). "
             f"Suggestions:\n"
             f"1. Reduce max_length (currently {args.get('max_length', 1000)}, try {suggested_max_length})\n"
-            f"2. Summarize fewer files at a time (currently {num_files})\n"
+            f"2. Summarize fewer sources at a time (currently {num_sources})\n"
             f"3. Summarize with different directives in separate calls",
         )

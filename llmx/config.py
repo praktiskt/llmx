@@ -72,24 +72,54 @@ class Config:
         return os.environ.get("LLM_INTERACTIVE", "False").lower() == "true"
 
     @staticmethod
+    def mcp_servers() -> dict | None:
+        raw = os.environ.get("LLM_MCP_SERVERS")
+        if not raw:
+            return None
+        import json as _json
+
+        try:
+            data = _json.loads(raw)
+        except Exception as e:
+            import sys as _sys
+
+            print(f"[mcp] invalid LLM_MCP_SERVERS JSON: {e}", file=_sys.stderr)
+            return None
+        if not isinstance(data, dict):
+            import sys as _sys
+
+            print("[mcp] LLM_MCP_SERVERS must be a JSON object", file=_sys.stderr)
+            return None
+        return data
+
+    @staticmethod
+    def mcp_timeout() -> float:
+        try:
+            return float(os.environ.get("LLM_MCP_TIMEOUT", "30"))
+        except ValueError:
+            return 30.0
+
+    @staticmethod
     def get_system_prompt() -> str:
         today = date.today().isoformat()
         prompt = (
             f"Today is: {today}. "
             "When making multiple independent tool calls, batch them in a single response for efficiency. "
-            "IMPORTANT: Use fetch() to get content. If content is large, it returns a file_id (6 lowercase alphanumeric chars). "
-            "When you need to read, grep, or summarize multiple files, use file_ids=[...] in a single call for efficiency. "
-            "Only use read_file, grep_file, or summarize with that exact file_id returned by fetch. "
-            "NEVER invent or guess file_ids - only use IDs explicitly returned by fetch."
+            "IMPORTANT: fetch() and search() store content as memory://<id> (6 lowercase alphanumeric chars). "
+            "When you need to read, grep, or summarize multiple documents, use sources=[...] in a single call for efficiency. "
+            "Only address documents by their exact memory://<id> returned by fetch or search. "
+            "NEVER invent or guess memory ids."
         )
         if Config.local_files_enabled():
             prompt += (
-                " read_file, grep_file, and summarize also accept paths=[...] with local "
-                "filesystem paths relative to the current working directory (globs like 'src/**/*.py' allowed); "
-                "list_files lists local files by glob/regex. "
-                "Local access is restricted: paths cannot be absolute, contain '..', or resolve outside "
-                "the current directory."
+                " sources=[...] also accepts local filesystem paths/globs relative to the "
+                "current working directory (e.g. 'src/**/*.py'); list_files lists local files "
+                "by glob/regex. Local access is restricted: no absolute paths, no '..', nothing "
+                "resolving outside the current directory."
             )
+        mcp = Config.mcp_servers()
+        if mcp:
+            prompt += f" MCP servers available: {', '.join(sorted(mcp.keys()))} (tools as <server>__<tool>)."
         return prompt
 
     @staticmethod
@@ -101,5 +131,5 @@ class Config:
         if not file_id:
             return "file_id is required"
         if not re.match(r"^[a-z0-9]{6}$", file_id):
-            return f"invalid file_id '{file_id}'. Must be 6 lowercase alphanumeric characters (e.g., 'abc123'). Do NOT invent file_ids - only use IDs returned by fetch."
+            return f"invalid id '{file_id}' - must be 6 lowercase alphanumeric characters; use the full memory://<id> exactly as returned by fetch or search."
         return None
