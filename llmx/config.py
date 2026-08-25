@@ -13,6 +13,8 @@ class Config:
     FETCH_TIMEOUT = 30
     SEARCH_TIMEOUT = 10
     MAX_CONTEXT_CHARS = int(os.environ.get("LLM_MAX_CONTEXT_CHARS", "200000"))
+    LOCAL_MAX_FILES = int(os.environ.get("LLM_LOCAL_MAX_FILES", "100"))
+    LOCAL_MAX_FILE_BYTES = int(os.environ.get("LLM_LOCAL_MAX_FILE_BYTES", "2000000"))
 
     @staticmethod
     def response_format():
@@ -62,9 +64,13 @@ class Config:
         return os.environ.get("LLM_FETCH_ALLOW_PRIVATE", "False").lower() == "true"
 
     @staticmethod
+    def local_files_enabled() -> bool:
+        return os.environ.get("LLM_LOCAL_FILES", "False").lower() == "true"
+
+    @staticmethod
     def get_system_prompt() -> str:
         today = date.today().isoformat()
-        return (
+        prompt = (
             f"Today is: {today}. "
             "When making multiple independent tool calls, batch them in a single response for efficiency. "
             "IMPORTANT: Use fetch() to get content. If content is large, it returns a file_id (6 lowercase alphanumeric chars). "
@@ -72,6 +78,15 @@ class Config:
             "Only use read_file, grep_file, or summarize with that exact file_id returned by fetch. "
             "NEVER invent or guess file_ids - only use IDs explicitly returned by fetch."
         )
+        if Config.local_files_enabled():
+            prompt += (
+                " read_file, grep_file, and summarize also accept paths=[...] with local "
+                "filesystem paths relative to the current working directory (globs like 'src/**/*.py' allowed); "
+                "list_files lists local files by glob/regex. "
+                "Local access is restricted: paths cannot be absolute, contain '..', or resolve outside "
+                "the current directory."
+            )
+        return prompt
 
     @staticmethod
     def generate_file_id() -> str:

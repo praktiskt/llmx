@@ -1,11 +1,18 @@
 import asyncio
 import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from llmx.cache import Cache
 from llmx.client import StreamFilter, truncate_history
 from llmx.config import Config
+from llmx.localfs import contents as localfs_contents
+from llmx.localfs import grep_entries as localfs_grep
+from llmx.localfs import list_entries as localfs_list
+from llmx.localfs import read_entries as localfs_read
+from llmx.localfs import resolve as localfs_resolve
 from llmx.tools import Tools, _repair_json, parse_tool_args
 from llmx.transport import Response, request_with_retries
 
@@ -515,6 +522,181 @@ class ToolsAllowlistTest(unittest.TestCase):
         os.environ["LLM_TOOLS"] = "read_file"
         result = asyncio.run(Tools.execute("read_file", {"file_ids": ["abc123"]}))
         self.assertIn("hello", result)
+
+
+class LocalFilesTest(unittest.TestCase):
+    def setUp(self):
+        self._old_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self._old_flag = os.environ.get("LLM_LOCAL_FILES")
+        os.environ["LLM_LOCAL_FILES"] = "true"
+        Path("src").mkdir()
+        Path("src/main.py").write_text("alpha\nbeta\ngamma\n")
+        Path("docs").mkdir()
+        Path("docs/note.md").write_text("hello world\nbeta again\n")
+        Path("docker").write_text("not a file_id\n")
+        Path("blob.bin").write_bytes(b"\x00\x01\x02binary")
+
+    def tearDown(self):
+        os.chdir(self._old_cwd)
+        self._tmp.cleanup()
+        if self._old_flag is None:
+            os.environ.pop("LLM_LOCAL_FILES", None)
+        else:
+            os.environ["LLM_LOCAL_FILES"] = self._old_flag
+
+    def test_read_offset_limit(self):
+        out = "\n".join(localfs_read(["src/main.py"], offset=2, limit=1))
+        self.assertIn("File src/main.py (lines 2-2 of 3)", out)
+        self.assertIn("2: beta", out)
+        self.assertNotIn("alpha", out)
+
+    def test_grep_literal_context_and_regex(self):
+        out = "\n".join(localfs_grep(["src/main.py"], "beta", context=1))
+        self.assertIn('1 matches for "beta"', out)
+        self.assertIn(" alpha", out)
+        self.assertIn(">2: beta", out)
+        out = "\n".join(localfs_grep(["src/main.py"], "^a", is_regex=True))
+        self.assertIn(">1: alpha", out)
+
+    def test_glob_multiple_files(self):
+        out = "\n\n---\n\n".join(localfs_grep(["**/*.py", "docs/*.md"], "beta"))
+        self.assertIn("src/main.py: 1 matches", out)
+        self.assertIn("docs/note.md: 1 matches", out)
+
+    def test_reject_absolute_and_traversal(self):
+        for bad in ["/etc/passwd", "../outside.txt", "src/../../../etc/passwd"]:
+            files, errors = localfs_resolve([bad])
+            self.assertEqual(files, [])
+            self.assertTrue(any("Error" in e for e in errors), bad)
+
+    def test_symlink_escape_rejected(self):
+        outside = Path(self._tmp.name).parent / f"outside_{os.getpid()}.txt"
+        outside.write_text("secret\n")
+        try:
+            os.symlink(outside.resolve(), "link.txt")
+            files, errors = localfs_resolve(["link.txt"])
+            self.assertEqual(files, [])
+            self.assertTrue(errors)
+        finally:
+            outside.unlink(missing_ok=True)
+
+    def test_binary_file_refused(self):
+        out = "\n".join(localfs_read(["blob.bin"]))
+        self.assertIn("binary file", out)
+
+    def test_missing_and_directory_messages(self):
+        out = "\n".join(localfs_read(["nope.txt"]))
+        self.assertIn("file nope.txt not found", out)
+        out = "\n".join(localfs_read(["src"]))
+        self.assertIn("is a directory", out)
+
+    def test_docker_named_file_vs_cache_ids(self):
+        Cache.store("docker", "cached content here")
+        cache_part = Cache.read(["docker"])
+        local_part = "\n".join(localfs_read(["docker"]))
+        self.assertIn("cached content here", cache_part)
+        self.assertIn("not a file_id", local_part)
+
+    def test_contents_pairs_for_summarize(self):
+        pairs = localfs_contents(["src/main.py", "missing.txt"])
+        labels = [label for label, _ in pairs]
+        texts = [text for _, text in pairs]
+        self.assertIn("src/main.py", labels)
+        self.assertIn("gamma", dict(pairs)["src/main.py"])
+        self.assertTrue(any(text.startswith("Error:") for text in texts))
+        self.assertIn(None, labels)
+
+    def test_list_entries_glob_and_regex(self):
+        out = localfs_list("**/*")
+        self.assertIn("src/main.py", out)
+        self.assertIn("docs/note.md", out)
+        out = localfs_list("**/*.py")
+        self.assertIn("main.py", out)
+        self.assertNotIn("note.md", out)
+        out = localfs_list(regex=r"\.md$")
+        self.assertIn("note.md", out)
+        self.assertNotIn("main.py", out)
+        out = localfs_list(pattern="../*")
+        self.assertIn("must stay under", out)
+
+    def test_tools_read_merge_and_disabled(self):
+        Cache.store("abc123", "cached line")
+        result = asyncio.run(
+            Tools.execute(
+                "read_file", {"file_ids": ["abc123"], "paths": ["src/main.py"]}
+            )
+        )
+        self.assertIn("File abc123", result)
+        self.assertIn("File src/main.py", result)
+
+        os.environ["LLM_LOCAL_FILES"] = "false"
+        result = asyncio.run(Tools.execute("read_file", {"paths": ["src/main.py"]}))
+        self.assertIn("disabled (LLM_LOCAL_FILES)", result)
+
+    def test_tools_teaching_error_when_neither_source(self):
+        result = asyncio.run(Tools.execute("read_file", {}))
+        self.assertIn("provide file_ids", result)
+        result = asyncio.run(Tools.execute("grep_file", {}))
+        self.assertIn("provide file_ids", result)
+
+    def test_tools_list_files(self):
+        result = asyncio.run(Tools.execute("list_files", {"regex": r"\.py$"}))
+        self.assertIn("src/main.py", result)
+        os.environ["LLM_LOCAL_FILES"] = "false"
+        result = asyncio.run(Tools.execute("list_files", {}))
+        self.assertIn("disabled", result)
+
+    def test_summarize_with_paths(self):
+        from llmx import tools as tools_mod
+
+        class FakeResp:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"choices": [{"message": {"content": "SUM"}}]}
+
+        async def fake_retry(factory, **kwargs):
+            return FakeResp()
+
+        saved_env = {
+            k: os.environ.get(k) for k in ("LLM_MODEL", "LLM_API_KEY", "LLM_HOST")
+        }
+        os.environ.update(LLM_MODEL="m", LLM_API_KEY="k", LLM_HOST="http://h")
+        original = tools_mod.request_with_retries
+        tools_mod.request_with_retries = fake_retry
+        try:
+            result = asyncio.run(
+                tools_mod.summarize([], ["d1"], paths=["src/main.py", "missing.txt"])
+            )
+        finally:
+            tools_mod.request_with_retries = original
+            for key, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertIn("File src/main.py:", result)
+        self.assertIn("SUM", result)
+        self.assertIn("File local files:", result)
+        self.assertIn("missing.txt not found", result)
+
+    def test_schema_includes_list_files_and_paths(self):
+        names = {t["function"]["name"] for t in Tools.SCHEMA}
+        self.assertIn("list_files", names)
+        by_name = {t["function"]["name"]: t for t in Tools.SCHEMA}
+        for tool in ("read_file", "grep_file", "summarize"):
+            props = by_name[tool]["function"]["parameters"]["properties"]
+            self.assertIn("paths", props, tool)
+
+    def test_system_prompt_conditional(self):
+        os.environ["LLM_LOCAL_FILES"] = "true"
+        self.assertIn("paths=[...]", Config.get_system_prompt())
+        os.environ["LLM_LOCAL_FILES"] = "false"
+        self.assertNotIn("paths=[...]", Config.get_system_prompt())
 
 
 if __name__ == "__main__":

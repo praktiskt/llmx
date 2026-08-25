@@ -8,6 +8,10 @@ from urllib.parse import urlparse
 
 from .cache import Cache
 from .config import Config
+from .localfs import contents as _localfs_contents
+from .localfs import grep_entries as _localfs_grep_entries
+from .localfs import list_entries as _localfs_list_entries
+from .localfs import read_entries as _localfs_read_entries
 from .search import search as _search
 from .transport import AsyncHttp, request_with_retries
 
@@ -85,12 +89,15 @@ async def summarize(
     max_length: int = 1000,
     offset: int | None = None,
     limit: int | None = None,
+    paths: list[str] | None = None,
 ) -> str:
     concurrency = int(os.environ.get("LLM_SUMMARIZE_CONCURRENCY", "4"))
     semaphore = asyncio.Semaphore(concurrency)
 
     async def summarize_task(task: tuple) -> tuple:
         file_id, directive, content = task
+        if content.startswith("Error:") and not directive:
+            return (file_id, directive, content)
         if len(content) > 180_000:
             return (
                 file_id,
@@ -199,6 +206,33 @@ async def summarize(
         for directive in directives:
             tasks.append((file_id, directive, content))
 
+    if paths:
+        if Config.local_files_enabled():
+            pairs = await asyncio.to_thread(_localfs_contents, paths)
+            local_errors = [text for label, text in pairs if label is None]
+            for key, text in pairs:
+                if key is None:
+                    continue
+                if offset is not None or limit is not None:
+                    lines = text.splitlines()
+                    if offset is not None and offset > 0:
+                        lines = lines[offset - 1 :]
+                    if limit is not None and limit > 0:
+                        lines = lines[:limit]
+                    text = "\n".join(lines)
+                for directive in directives:
+                    tasks.append((key, directive, text))
+            if local_errors:
+                tasks.append(("local files", "", "\n\n".join(local_errors)))
+        else:
+            tasks.append(
+                (
+                    "local files",
+                    "",
+                    "Error: local file access is disabled (LLM_LOCAL_FILES)",
+                )
+            )
+
     async def run_task(task: tuple) -> tuple:
         return await summarize_task(task)
 
@@ -210,7 +244,11 @@ async def summarize(
         results_map[file_id].append(result)
 
     final_results = []
-    for file_id in file_ids:
+    keys_order: list[str] = list(file_ids)
+    for key, _, _ in results:
+        if key not in keys_order:
+            keys_order.append(key)
+    for file_id in keys_order:
         if file_id not in results_map:
             continue
         summaries = results_map[file_id]
@@ -299,7 +337,7 @@ class Tools:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read content from one or more cached files (file_id from fetch)",
+                "description": "Read content from one or more cached files (file_id from fetch) and/or local files (paths relative to the current directory, if local access is enabled)",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -307,6 +345,11 @@ class Tools:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "List of 6-character lowercase alphanumeric IDs returned by fetch (e.g., ['abc123', 'xyz789']). Do NOT invent file_ids.",
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Local file paths or globs relative to the current directory (e.g., ['src/main.py', 'docs/*.md']). Only available when local file access is enabled.",
                         },
                         "offset": {
                             "type": "integer",
@@ -317,7 +360,7 @@ class Tools:
                             "description": "Max lines per file to return (optional)",
                         },
                     },
-                    "required": ["file_ids"],
+                    "required": [],
                 },
             },
         },
@@ -325,7 +368,7 @@ class Tools:
             "type": "function",
             "function": {
                 "name": "summarize",
-                "description": "Summarize one or more cached files according to multiple directives",
+                "description": "Summarize one or more cached files (file_id from fetch) and/or local files according to multiple directives",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -333,6 +376,11 @@ class Tools:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "List of 6-character lowercase alphanumeric IDs returned by fetch (e.g., ['abc123', 'xyz789']). Do NOT invent file_ids.",
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Local file paths or globs relative to the current directory. Only available when local file access is enabled.",
                         },
                         "directives": {
                             "type": "array",
@@ -360,7 +408,7 @@ class Tools:
             "type": "function",
             "function": {
                 "name": "grep_file",
-                "description": "Search for a pattern in one or more cached files (file_id from fetch)",
+                "description": "Search for a pattern in one or more cached files (file_id from fetch) and/or local files (paths relative to the current directory, if local access is enabled)",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -368,6 +416,11 @@ class Tools:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "List of 6-character lowercase alphanumeric IDs returned by fetch (e.g., ['abc123', 'xyz789']). Do NOT invent file_ids.",
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Local file paths or globs relative to the current directory (e.g., ['src/main.py', 'src/**/*.py']). Only available when local file access is enabled.",
                         },
                         "pattern": {
                             "type": "string",
@@ -386,7 +439,32 @@ class Tools:
                             "description": "Lines of context before/after match (default 0)",
                         },
                     },
-                    "required": ["file_ids", "pattern"],
+                    "required": ["pattern"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List local files under the current directory matching an optional glob pattern and/or path regex (requires local file access to be enabled)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Glob relative to the current directory (default '**/*', e.g., 'src/**/*.py')",
+                        },
+                        "regex": {
+                            "type": "string",
+                            "description": "Optional regex filtering returned paths (matched against the relative path)",
+                        },
+                        "ignore_case": {
+                            "type": "boolean",
+                            "description": "Case-insensitive regex (default false)",
+                        },
+                    },
+                    "required": [],
                 },
             },
         },
@@ -465,6 +543,7 @@ class Tools:
             "read_file": Tools._exec_read_file,
             "summarize": Tools._exec_summarize,
             "grep_file": Tools._exec_grep_file,
+            "list_files": Tools._exec_list_files,
         }
         handler = handlers.get(tool_name)
         if handler is None:
@@ -484,12 +563,44 @@ class Tools:
         )
 
     @staticmethod
+    def _local_paths(args: dict) -> list[str] | None:
+        """Paths arg if provided, else None. Empty/missing -> None."""
+        raw = args.get("paths")
+        if not raw:
+            return None
+        return Tools._as_list(raw)
+
+    @staticmethod
+    def _local_disabled_error() -> str:
+        return "Error: local file access is disabled (LLM_LOCAL_FILES)"
+
+    @staticmethod
     async def _exec_read_file(args: dict) -> str:
-        return Cache.read(
-            Tools._as_list(args.get("file_ids", [])),
-            args.get("offset"),
-            args.get("limit"),
-        )
+        parts = []
+        if args.get("file_ids"):
+            parts.append(
+                Cache.read(
+                    Tools._as_list(args.get("file_ids")),
+                    args.get("offset"),
+                    args.get("limit"),
+                )
+            )
+        paths = Tools._local_paths(args)
+        if paths:
+            if not Config.local_files_enabled():
+                parts.append(Tools._local_disabled_error())
+            else:
+                parts.extend(
+                    await asyncio.to_thread(
+                        _localfs_read_entries,
+                        paths,
+                        args.get("offset"),
+                        args.get("limit"),
+                    )
+                )
+        if not parts:
+            return "Error: provide file_ids (from fetch) or paths (local files, relative to the current directory)"
+        return "\n\n---\n\n".join(parts)
 
     @staticmethod
     async def _exec_summarize(args: dict) -> str:
@@ -499,16 +610,50 @@ class Tools:
             args.get("max_length", 1000),
             args.get("offset"),
             args.get("limit"),
+            paths=Tools._local_paths(args),
         )
 
     @staticmethod
     async def _exec_grep_file(args: dict) -> str:
-        return Cache.grep(
-            Tools._as_list(args.get("file_ids", [])),
-            args.get("pattern", ""),
-            args.get("is_regex", False),
+        parts = []
+        if args.get("file_ids"):
+            parts.append(
+                Cache.grep(
+                    Tools._as_list(args.get("file_ids")),
+                    args.get("pattern", ""),
+                    args.get("is_regex", False),
+                    args.get("ignore_case", False),
+                    args.get("context", 0),
+                )
+            )
+        paths = Tools._local_paths(args)
+        if paths:
+            if not Config.local_files_enabled():
+                parts.append(Tools._local_disabled_error())
+            else:
+                parts.extend(
+                    await asyncio.to_thread(
+                        _localfs_grep_entries,
+                        paths,
+                        args.get("pattern", ""),
+                        args.get("is_regex", False),
+                        args.get("ignore_case", False),
+                        args.get("context", 0),
+                    )
+                )
+        if not parts:
+            return "Error: provide file_ids (from fetch) or paths (local files, relative to the current directory)"
+        return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    async def _exec_list_files(args: dict) -> str:
+        if not Config.local_files_enabled():
+            return Tools._local_disabled_error()
+        return await asyncio.to_thread(
+            _localfs_list_entries,
+            args.get("pattern") or "**/*",
+            args.get("regex"),
             args.get("ignore_case", False),
-            args.get("context", 0),
         )
 
     @staticmethod

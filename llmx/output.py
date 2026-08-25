@@ -21,6 +21,7 @@ class Color:
         "read_file": "\033[2;34m",
         "summarize": "\033[2;33m",
         "grep_file": "\033[2;35m",
+        "list_files": "\033[2;37m",
     }
     DEFAULT = "\033[2m"
     THINKING = "\033[2;3m"
