@@ -37,12 +37,16 @@ def _mcp_headers(extra: dict | None) -> dict:
     return headers
 
 
-def _extract_content(result: dict) -> tuple[str, bool]:
+def _extract_content(result: dict | None) -> tuple[str, bool]:
     """Return (text, is_error) from tools/call result."""
+    if result is None:
+        return ("MCP tool returned no content (timed out or empty result)", True)
     if not isinstance(result, dict):
         return (json.dumps(result, ensure_ascii=False), False)
     is_error = bool(result.get("isError"))
     content = result.get("content", result)
+    if content is None:
+        return ("MCP tool returned no content (timed out or empty result)", True)
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
@@ -341,13 +345,28 @@ class _MCPHttpClient:
             self._id += 1
             msg_id = self._id
         payload = {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
-        resp = await AsyncHttp.post(
-            self.url,
-            json=payload,
-            headers=self._headers_with_session(),
-            timeout=timeout,
-            reuse=False,
-        )
+        try:
+            resp = await asyncio.wait_for(
+                AsyncHttp.post(
+                    self.url,
+                    json=payload,
+                    headers=self._headers_with_session(),
+                    timeout=timeout,
+                    reuse=False,
+                ),
+                timeout=timeout + 2,
+            )
+        except TimeoutError as e:
+            raise MCPError(
+                f"server '{self.name}' request '{method}' timed out after {timeout}s"
+            ) from e
+        except Exception as e:
+            # http.client socket timeout surfaces as TimeoutError with "timed out" text
+            if isinstance(e, TimeoutError) or "timed out" in str(e).lower():
+                raise MCPError(
+                    f"server '{self.name}' request '{method}' timed out after {timeout}s"
+                ) from e
+            raise
         self._capture_session(resp)
         if resp.status_code >= 400:
             raise MCPError(
