@@ -1,90 +1,29 @@
 # llmx
 
-LLM assistant with tool use: dependency-free CLI + small web chat server.
+LLM with tool use - dependency-free CLI (`dist/llm` zipapp, stdlib only) + FastAPI web UI (SSE streaming).
 
-- **CLI** (`dist/llm`): standalone zipapp, pure stdlib, runs on any Linux with `python3`
-- **Server** (`llmx/server.py`): FastAPI web UI, SSE-streamed thinking + answers
-- **Tools**: fetch URLs and web search (results stored as `memory://<id>`), read/grep/summarize any mix of `memory://` docs and local files, list local files, plus MCP tools (`server__tool` when `LLM_MCP_SERVERS` is set)
-- **Resilience**: 5x retry on all >=400/network errors, keep-alive connection pool, context-window truncation, harness-artifact filtering
+Tools: `fetch`/`search`->`memory://<id>`, `read_file`/`grep_file`/`summarize` over `sources=[memory://..., "path/*.py"]`, `list_files`, MCP `server__tool`. Resilience: 5x retry, keep-alive pool, context truncation, harness filter.
 
-## CLI
+## Quickstart
 
 ```sh
-export LLM_HOST="https://gateway/v1/chat/completions"  # required
-export LLM_API_KEY="..."                               # required
-export LLM_MODEL="..."                                 # required
-
+export LLM_HOST="https://gateway/v1/chat/completions" LLM_API_KEY="..." LLM_MODEL="..." # required
 llm "Explain quines"
-echo "text" | llm "summarize this"
+echo "text" | llm "summarize this"          # thinking->stderr, answer->stdout
+uv run uvicorn llmx.server:app --port 8080  # sessions 1h (LLM_SESSION_TTL)
+make build && cp dist/llm ~/.local/bin/llm; make test
 ```
 
-Thinking -> stderr, answer -> stdout.
+## Env
 
-## Server
+`LLM_TOOLS` (all; `fetch,search,read_file,grep_file,summarize,list_files` or `server__tool`), `LLM_TEMPERATURE=0.1`, `LLM_STREAM=True`, `LLM_RESPONSE_FORMAT` (set disables stream), `LLM_SHOW_THINKING=True`, `LLM_MAX_CONTEXT_CHARS=200000`, `LLM_SYSTEM_PROMPT`, `NO_COLOR`/`LLM_DISABLE_COLOR_OUTPUT=False`, `LOG_LEVEL=WARNING` (CLI) / `INFO` (server).
 
-```sh
-uv run uvicorn llmx.server:app --port 8080
-```
+`LLM_MARKDOWN_FETCH_PROXY`, `LLM_MARKDOWN_SEARCH_PROXY`, `LLM_MARKDOWN_IMAGE_SEARCH_PROXY`, `LLM_FETCH_ALLOW_PRIVATE=False`, `LLM_SUMMARIZE_CONCURRENCY=4`.
 
-Sessions expire after 1h (`LLM_SESSION_TTL`).
+`LLM_BIND_ADDRESS=0.0.0.0`, `LLM_SERVER_PORT=8080`, `LLM_SESSION_TTL=3600`, `LLM_MAX_SESSIONS=200`.
 
-## Build / test
+`LLM_LOCAL_FILES=False` (+ `LLM_LOCAL_MAX_FILES=100`, `LLM_LOCAL_MAX_FILE_BYTES=2000000`) - enables `sources` local paths/globs (relative, no `..`/absolute/symlink escape).
 
-```sh
-make build   # -> dist/llm
-cp dist/llm ~/.local/bin/llm
-make test    # stdlib unittest
-```
+`LLM_INTERACTIVE=False` - tty REPL (`> `, Ctrl-D/`quit`/`exit`).
 
-## Env (optional)
-
-Core:
-
-- `LLM_TOOLS` — unset = all tools, empty = none, else comma-separated allowlist: `fetch,search,read_file,grep_file,summarize,list_files`
-- `LLM_TEMPERATURE` (0.1), `LLM_STREAM` (True), `LLM_RESPONSE_FORMAT` (unset; setting it disables streaming)
-- `LLM_SHOW_THINKING` (True), `LLM_MAX_CONTEXT_CHARS` (200000)
-- `LLM_SYSTEM_PROMPT` — overrides the built-in tool-usage prompt
-- `NO_COLOR` / `LLM_DISABLE_COLOR_OUTPUT` (False) — disable ANSI colors
-- `LOG_LEVEL` (WARNING for CLI, INFO for server)
-
-Network / tools:
-
-- `LLM_MARKDOWN_FETCH_PROXY`, `LLM_MARKDOWN_SEARCH_PROXY`, `LLM_MARKDOWN_IMAGE_SEARCH_PROXY`
-- `LLM_FETCH_ALLOW_PRIVATE` (False) — allow fetch to private/loopback hosts
-- `LLM_SUMMARIZE_CONCURRENCY` (4)
-
-Server:
-
-- `LLM_BIND_ADDRESS` (0.0.0.0), `LLM_SERVER_PORT` (8080)
-- `LLM_SESSION_TTL` (3600), `LLM_MAX_SESSIONS` (200)
-
-Local files:
-
-- `LLM_LOCAL_FILES` (False) — when true, `read_file`, `grep_file`, and `summarize`
-  accept `sources=[...]` mixing `memory://<id>` docs with local paths relative to
-  the current directory (globs allowed); `list_files` lists local files by
-  glob/regex; paths cannot be absolute, contain `..`, or resolve outside the
-  cwd, symlinks included
-- `LLM_LOCAL_MAX_FILES` (100), `LLM_LOCAL_MAX_FILE_BYTES` (2000000)
-
-Interactive:
-
-- `LLM_INTERACTIVE` (False) — when true and stdin is a tty, keeps reading new user
-  lines after each answer as one continuing conversation; Ctrl-D, `quit`, or
-  `exit` ends the session
-
-MCP servers (zero extra dependencies):
-
-- `LLM_MCP_SERVERS` (unset) — JSON object mapping server name → config. Tools
-  appear as `<server>__<tool>` (filtered by `LLM_TOOLS` like builtins). Example:
-  ```json
-  {
-    "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
-    "remote": {"url": "http://localhost:8001/mcp", "headers": {"Authorization": "Bearer x"}}
-  }
-  ```
-  stdio: `command` (required), `args` (optional list), `env` (optional dict
-  merged with process env), `cwd` (optional). http: `url` (required),
-  `headers` (optional dict). Large MCP results are auto-stored as
-  `memory://<id>` like `fetch`. Server names must match `[a-zA-Z0-9_-]{1,32}`.
-- `LLM_MCP_TIMEOUT` (30) — seconds for MCP handshake and tool calls
+`LLM_MCP_SERVERS` (unset) - `{"fs":{"command":"npx","args":[...]},"remote":{"url":"http://host/mcp","headers":{}}}` (stdio: `command`+`args`/`env`/`cwd`; http: `url`+`headers`) -> `fs__tool`, `LLM_TOOLS`-filterable, large->`memory://` (`[a-zA-Z0-9_-]{1,32}`). `LLM_MCP_TIMEOUT=30`.
