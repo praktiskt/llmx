@@ -33,7 +33,7 @@ FAKE_STDIO_ECHO = textwrap.dedent("""
         elif method=="tools/call":
             text=msg["params"]["arguments"].get("text","")
             if text=="large":
-                big="x"*9000
+                big="x"*17000
                 resp={"jsonrpc":"2.0","id":mid,"result":{"content":[{"type":"text","text":big}]}}
             elif text=="error":
                 resp={"jsonrpc":"2.0","id":mid,"result":{"content":[{"type":"text","text":"oops"}],"isError":True}}
@@ -160,7 +160,7 @@ class MCPTimeoutTest(unittest.TestCase):
             await self.mcp_mod.get_mcp_manager()
             res = await Tools.execute("demo__echo", {"text": "large"})
             self.assertIn("memory://", res)
-            self.assertIn("9000 chars", res)
+            self.assertIn("17000 chars", res)
             # Extract id and verify cache
             import re
 
@@ -169,8 +169,7 @@ class MCPTimeoutTest(unittest.TestCase):
             fid = m.group(1)
             cached = Cache.get(fid)
             self.assertIsNotNone(cached)
-            # Cache wraps long lines, so stored length > 9000 with newlines
-            self.assertGreater(len(cached), 8000)
+            self.assertEqual(len(cached), 17000)
 
         asyncio.run(run())
 

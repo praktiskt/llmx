@@ -17,24 +17,11 @@ class Cache:
 
     @staticmethod
     def store(file_id: str, content: str) -> None:
-        wrapped_lines = []
+        lines = []
         for line in content.splitlines():
             line = re.sub(r"(data:[^,]+,)[^)\s]+", r"\1[TRUNCATED]", line)
-
-            if len(line) <= 200:
-                wrapped_lines.append(line)
-            else:
-                start = 0
-                while start < len(line):
-                    chunk = line[start : start + 200]
-                    last_space = chunk.rfind(" ")
-                    if last_space > 0:
-                        wrapped_lines.append(chunk[:last_space])
-                        start += last_space + 1
-                    else:
-                        wrapped_lines.append(chunk)
-                        start += 200
-        Cache._storage[file_id] = "\n".join(wrapped_lines)
+            lines.append(line)
+        Cache._storage[file_id] = "\n".join(lines)
         Cache._storage.move_to_end(file_id)
         while len(Cache._storage) > Cache.MAX_ENTRIES:
             Cache._storage.popitem(last=False)
@@ -71,7 +58,7 @@ class Cache:
             offset = 1
 
         if limit is None:
-            limit = 50
+            limit = 100
         if limit < 1:
             limit = 1
 

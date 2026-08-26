@@ -118,11 +118,12 @@ async def summarize(
         file_id, directive, content = task
         if content.startswith("Error:") and not directive:
             return (file_id, directive, content)
-        if len(content) > 180_000:
+        summarize_limit = max(50_000, Config.MAX_CONTEXT_CHARS - 20_000)
+        if len(content) > summarize_limit:
             return (
                 file_id,
                 directive,
-                f"Error: Content too large ({len(content)} chars, max 180k). Use summarize with offset/limit to select a smaller section.",
+                f"Error: Content too large ({len(content)} chars, max {summarize_limit // 1000}k). Use summarize with offset/limit to select a smaller section.",
             )
         tokens_for_summary = max(250, max_length * 2)
         messages = [

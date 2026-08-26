@@ -6,15 +6,14 @@ from datetime import date
 
 
 class Config:
-    CONTENT_THRESHOLD = 5000
-    MAX_TOOL_RESULT_CHARS = 8000
-    GREP_MAX_MATCHES = 50
+    MAX_TOOL_RESULT_CHARS = int(os.environ.get("LLM_MAX_TOOL_RESULT_CHARS", "16000"))
+    GREP_MAX_MATCHES = int(os.environ.get("LLM_GREP_MAX_MATCHES", "100"))
     LLM_TIMEOUT = 60
     FETCH_TIMEOUT = 30
     SEARCH_TIMEOUT = 10
     MAX_CONTEXT_CHARS = int(os.environ.get("LLM_MAX_CONTEXT_CHARS", "200000"))
-    LOCAL_MAX_FILES = int(os.environ.get("LLM_LOCAL_MAX_FILES", "100"))
-    LOCAL_MAX_FILE_BYTES = int(os.environ.get("LLM_LOCAL_MAX_FILE_BYTES", "2000000"))
+    LOCAL_MAX_FILES = int(os.environ.get("LLM_LOCAL_MAX_FILES", "300"))
+    LOCAL_MAX_FILE_BYTES = int(os.environ.get("LLM_LOCAL_MAX_FILE_BYTES", "5000000"))
 
     @staticmethod
     def response_format():

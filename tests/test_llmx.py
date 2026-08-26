@@ -79,7 +79,14 @@ class CacheTest(unittest.TestCase):
     def test_wraps_long_lines(self):
         Cache.store("abc123", "x" * 500)
         content = Cache.get("abc123")
-        self.assertTrue(all(len(line) <= 200 for line in content.splitlines()))
+        # Long lines are preserved; only data: URIs are truncated
+        self.assertEqual(content, "x" * 500)
+
+    def test_truncates_data_uris(self):
+        Cache.store("abc123", "data:image/png,aaaaabbbbbccccc rest")
+        content = Cache.get("abc123")
+        self.assertIn("data:image/png,[TRUNCATED]", content)
+        self.assertNotIn("aaaaa", content)
 
     def test_lru_eviction(self):
         for i in range(60):
