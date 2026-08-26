@@ -525,16 +525,14 @@ class MCPManager:
         full = (
             f"{prefix}{text}" if text else (f"{prefix}(no content)" if is_error else "")
         )
-        # Auto memory:// for large results.
-        if len(full) > Config.MAX_TOOL_RESULT_CHARS:
-            try:
-                from .cache import Cache
+        try:
+            from .cache import Cache
 
-                file_id = Cache.new_id()
-                Cache.store(file_id, full)
-                return f"Stored as memory://{file_id} ({len(full)} chars). Use read_file with sources=['memory://{file_id}'] to read or summarize."
-            except Exception as e:
-                logger.warning("MCP large result cache failed: %s", e)
+            maybe = Cache.maybe_store_large(full)
+            if maybe is not full:
+                return maybe
+        except Exception as e:
+            logger.warning("MCP large result cache failed: %s", e)
         return full
 
     async def close(self) -> None:

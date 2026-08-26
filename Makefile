@@ -7,6 +7,8 @@ build:
 	rm -rf .build_tmp dist
 	mkdir -p .build_tmp dist
 	cp -r llmx .build_tmp/llmx
+	rm -f .build_tmp/llmx/server.py
+	rm -rf .build_tmp/llmx/static
 	find .build_tmp -name '__pycache__' -type d -exec rm -rf {} +
 	printf 'import asyncio\n\nfrom llmx.cli import main\n\nasyncio.run(main())\n' > .build_tmp/__main__.py
 	uv run python -m zipapp .build_tmp -p "/usr/bin/env python3" -o dist/llm

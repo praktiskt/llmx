@@ -5,7 +5,6 @@ import http.client
 import io
 import json
 import logging
-import threading
 from collections.abc import Awaitable, Callable
 from urllib.parse import urljoin, urlparse
 
@@ -71,8 +70,8 @@ async def request_with_retries(
     return last_response
 
 
-class _PooledStream:
-    """Wraps an HTTPResponse whose connection is discarded on close."""
+class _Stream:
+    """One-shot streaming body that closes connection on close."""
 
     def __init__(
         self, conn: http.client.HTTPConnection, resp: http.client.HTTPResponse
@@ -88,13 +87,14 @@ class _PooledStream:
         return iter(self._resp)
 
     def close(self) -> None:
-        # Streaming may exit early ([DONE], errors) leaving unread body bytes;
-        # pooling that connection poisons the pool. Always discard.
         try:
             self._resp.close()
         except Exception:
             pass
-        _discard_connection(self._conn)
+        try:
+            self._conn.close()
+        except Exception:
+            pass
 
 
 class Response:
@@ -145,10 +145,6 @@ class Response:
         self._fp.close()
 
 
-_pool: dict[tuple[str, str, int], list[http.client.HTTPConnection]] = {}
-_pool_lock = threading.Lock()
-
-
 def _new_connection(
     scheme: str, host: str, port: int, timeout: float | None
 ) -> http.client.HTTPConnection:
@@ -157,38 +153,8 @@ def _new_connection(
     return http.client.HTTPConnection(host, port=port, timeout=timeout)
 
 
-def _checkout_connection(
-    scheme: str, host: str, port: int, timeout: float | None
-) -> tuple[http.client.HTTPConnection, bool]:
-    """Return (connection, reused). Reused connections come from the idle pool."""
-    key = (scheme, host, port)
-    with _pool_lock:
-        idle = _pool.get(key)
-        if idle:
-            conn = idle.pop()
-            conn.timeout = timeout
-            return conn, True
-    return _new_connection(scheme, host, port, timeout), False
-
-
-def _release_connection(conn: http.client.HTTPConnection) -> None:
-    key = (conn._llmx_scheme, conn.host, conn.port)  # type: ignore[attr-defined]
-    with _pool_lock:
-        idle = _pool.setdefault(key, [])
-        if len(idle) < 8:
-            idle.append(conn)
-            return
-    conn.close()
-
-
-def _discard_connection(conn: http.client.HTTPConnection) -> None:
-    try:
-        conn.close()
-    except Exception:
-        pass
-
-
-def _sync_request(method: str, url: str, reuse: bool = True, **kwargs):
+def _sync_request(method: str, url: str, **kwargs):
+    kwargs.pop("reuse", None)
     parsed = urlparse(url)
 
     headers = {"User-Agent": DEFAULT_USER_AGENT}
@@ -213,38 +179,20 @@ def _sync_request(method: str, url: str, reuse: bool = True, **kwargs):
         if parsed.query:
             path += "?" + parsed.query
 
-        conn, reused = _checkout_connection(parsed.scheme, host, port, timeout)
-        conn._llmx_scheme = parsed.scheme  # type: ignore[attr-defined]
+        conn = _new_connection(parsed.scheme, host, port, timeout)
         try:
-            try:
-                conn.request(method, path, body=body, headers=headers)
-                resp = conn.getresponse()
-            except (
-                http.client.BadStatusLine,
-                http.client.RemoteDisconnected,
-                ConnectionError,
-            ):
-                # A pooled connection may have been closed or poisoned by the
-                # server after it was released. Retry once on a fresh socket.
-                _discard_connection(conn)
-                if not reused:
-                    raise
-                logger.warning(
-                    "Reused connection to %s:%d was stale; retrying on fresh connection",
-                    host,
-                    port,
-                )
-                conn = _new_connection(parsed.scheme, host, port, timeout)
-                conn._llmx_scheme = parsed.scheme  # type: ignore[attr-defined]
-                conn.request(method, path, body=body, headers=headers)
-                resp = conn.getresponse()
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
             raw_headers = resp.headers
 
             if resp.status in _REDIRECT_STATUSES and "location" in raw_headers:
                 location = raw_headers["location"]
                 next_url = urljoin(url, location)
                 resp.read()
-                _discard_or_release(conn, resp)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
                 parsed, url = urlparse(next_url), next_url
                 if resp.status in (303, 301, 302):
                     method, body = "GET", None
@@ -253,34 +201,25 @@ def _sync_request(method: str, url: str, reuse: bool = True, **kwargs):
             if stream:
                 hdrs = {k.lower(): v for k, v in resp.headers.items()}
                 return Response(
-                    _PooledStream(conn, resp), status_code=resp.status, headers=hdrs
+                    _Stream(conn, resp), status_code=resp.status, headers=hdrs
                 )
 
             data = resp.read()
             status = resp.status
             hdrs = {k.lower(): v for k, v in raw_headers.items()} if raw_headers else {}
-            _discard_or_release(conn, resp, release=reuse)
+            try:
+                conn.close()
+            except Exception:
+                pass
             return Response(io.BytesIO(data), data, status_code=status, headers=hdrs)
         except Exception:
-            _discard_connection(conn)
+            try:
+                conn.close()
+            except Exception:
+                pass
             raise
 
     raise RuntimeError(f"Too many redirects requesting {url}")
-
-
-def _discard_or_release(
-    conn: http.client.HTTPConnection,
-    resp: http.client.HTTPResponse,
-    release: bool = True,
-):
-    try:
-        keep_alive = release and not resp.will_close and conn.sock is not None
-    except Exception:
-        keep_alive = False
-    if keep_alive:
-        _release_connection(conn)
-    else:
-        _discard_connection(conn)
 
 
 class AsyncHttp:

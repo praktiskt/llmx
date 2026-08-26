@@ -47,6 +47,15 @@ class Cache:
         return content
 
     @staticmethod
+    def maybe_store_large(content: str) -> str:
+        """If content exceeds MAX_TOOL_RESULT_CHARS, store as memory:// and return reference."""
+        if len(content) > Config.MAX_TOOL_RESULT_CHARS:
+            file_id = Cache.new_id()
+            Cache.store(file_id, content)
+            return f"Stored as memory://{file_id} ({len(content)} chars). Use read_file with sources=['memory://{file_id}'] to read or summarize."
+        return content
+
+    @staticmethod
     def _format_read(
         label: str,
         content: str,
