@@ -137,10 +137,14 @@ class LLMClient:
     @staticmethod
     async def _next_user_message() -> str | None:
         """Prompt until a non-blank tty line; None on EOF or quit command."""
+        try:
+            import readline  # noqa: F401 — enables Alt+Backspace etc.
+        except ImportError:
+            pass
         while True:
-            Log.stderr(Color.dim("> "), end="", flush=True)
-            line = await asyncio.to_thread(sys.stdin.readline)
-            if not line:
+            try:
+                line = await asyncio.to_thread(input, "> ")
+            except EOFError:
                 return None
             text = line.strip()
             if text.lower() in {"exit", "quit", "/exit", "/quit"}:

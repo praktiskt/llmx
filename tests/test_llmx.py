@@ -834,18 +834,26 @@ class InteractiveTest(unittest.TestCase):
         self.assertFalse(Config.interactive_enabled())
 
     def test_next_user_message_reads_and_skips_blanks(self):
-        sys.stdin = self._FakeStdin(["", "  ", "hello"])
-        out = run(self.client_mod.LLMClient._next_user_message())
+        import unittest.mock
+
+        with unittest.mock.patch("builtins.input", side_effect=["", "  ", "hello"]):
+            out = run(self.client_mod.LLMClient._next_user_message())
         self.assertEqual(out, "hello")
 
     def test_next_user_message_quit_commands(self):
+        import unittest.mock
+
         for cmd in ["quit", "exit", "/quit", "/exit"]:
-            sys.stdin = self._FakeStdin([cmd])
-            self.assertIsNone(run(self.client_mod.LLMClient._next_user_message()), cmd)
+            with unittest.mock.patch("builtins.input", return_value=cmd):
+                self.assertIsNone(
+                    run(self.client_mod.LLMClient._next_user_message()), cmd
+                )
 
     def test_next_user_message_eof(self):
-        sys.stdin = self._FakeStdin([])
-        self.assertIsNone(run(self.client_mod.LLMClient._next_user_message()))
+        import unittest.mock
+
+        with unittest.mock.patch("builtins.input", side_effect=EOFError):
+            self.assertIsNone(run(self.client_mod.LLMClient._next_user_message()))
 
     def _run_stream(self, argv, contents):
         """Patch AsyncHttp.post; returns list of request bodies."""
@@ -887,9 +895,12 @@ class InteractiveTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_interactive_continues_conversation(self):
+        import unittest.mock
+
         os.environ["LLM_INTERACTIVE"] = "true"
-        sys.stdin = self._FakeStdin(["follow-up", "quit"])
-        calls = self._run_stream(["hi"], ["one", "two"])
+        sys.stdin = self._FakeStdin([])
+        with unittest.mock.patch("builtins.input", side_effect=["follow-up", "quit"]):
+            calls = self._run_stream(["hi"], ["one", "two"])
         self.assertEqual(len(calls), 2)
         roles = [m["role"] for m in calls[1]["messages"]]
         self.assertEqual(roles, ["system", "user", "assistant", "user"])
@@ -897,9 +908,14 @@ class InteractiveTest(unittest.TestCase):
         self.assertEqual(calls[1]["messages"][3]["content"], "follow-up")
 
     def test_interactive_first_input_when_no_args(self):
+        import unittest.mock
+
         os.environ["LLM_INTERACTIVE"] = "true"
-        sys.stdin = self._FakeStdin(["first prompt", "quit"])
-        calls = self._run_stream([], ["answer"])
+        sys.stdin = self._FakeStdin([])
+        with unittest.mock.patch(
+            "builtins.input", side_effect=["first prompt", "quit"]
+        ):
+            calls = self._run_stream([], ["answer"])
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["messages"][1]["content"], "first prompt")
 
