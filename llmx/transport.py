@@ -6,7 +6,7 @@ import io
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +153,55 @@ def _new_connection(
     return http.client.HTTPConnection(host, port=port, timeout=timeout)
 
 
+def _iri_to_uri(url: str) -> str:
+    """Convert IRI with unicode to URI with percent-encoding and punycode.
+
+    Keeps already-encoded %XX intact, encodes unicode path/query/fragment
+    and IDNA-encodes hostname. Safe for http.client ASCII path.
+    """
+    if not url or url.startswith("data:"):
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.scheme:
+        return url
+    # IDNA host
+    netloc = parts.netloc
+    if parts.hostname:
+        try:
+            host_ascii = parts.hostname.encode("idna").decode("ascii")
+        except Exception:
+            host_ascii = parts.hostname
+        # rebuild netloc with userinfo/port
+        rebuilt = ""
+        if parts.username:
+            rebuilt += quote(unquote(parts.username), safe="._~-")
+            if parts.password:
+                rebuilt += ":" + quote(unquote(parts.password), safe="._~-")
+            rebuilt += "@"
+        # handle IPv6 brackets
+        if "[" in parts.netloc and parts.hostname:
+            rebuilt += f"[{host_ascii}]"
+        else:
+            rebuilt += host_ascii
+        if parts.port:
+            rebuilt += f":{parts.port}"
+        netloc = rebuilt
+    # path / query / fragment: unquote then quote to normalize
+    # safe keeps RFC 3986 sub-delims + unreserved; % kept to avoid double-encode
+    # when not unquoting, but we unquote so % safe not needed for correctness
+    # yet keep it to preserve stray % handling via unquote->quote cycle
+    path = quote(unquote(parts.path), safe="/:@!$&'()*+,;=-._~%")
+    query = quote(unquote(parts.query), safe="/:@!$&'()*+,;=-._~%?=&")
+    fragment = quote(unquote(parts.fragment), safe="/:@!$&'()*+,;=-._~%?=&%#")
+    return urlunsplit((parts.scheme, netloc, path, query, fragment))
+
+
 def _sync_request(method: str, url: str, **kwargs):
     kwargs.pop("reuse", None)
+    url = _iri_to_uri(url)
     parsed = urlparse(url)
 
     headers = {"User-Agent": DEFAULT_USER_AGENT}
@@ -187,7 +234,7 @@ def _sync_request(method: str, url: str, **kwargs):
 
             if resp.status in _REDIRECT_STATUSES and "location" in raw_headers:
                 location = raw_headers["location"]
-                next_url = urljoin(url, location)
+                next_url = _iri_to_uri(urljoin(url, location))
                 resp.read()
                 try:
                     conn.close()

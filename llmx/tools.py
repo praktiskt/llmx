@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from .cache import Cache
 from .config import Config
@@ -13,7 +13,7 @@ from .localfs import grep_entries as _localfs_grep_entries
 from .localfs import list_entries as _localfs_list_entries
 from .localfs import read_entries as _localfs_read_entries
 from .search import search as _search
-from .transport import AsyncHttp, request_with_retries
+from .transport import AsyncHttp, _iri_to_uri, request_with_retries
 
 try:
     from .mcp import get_mcp_schemas_sync, mcp_call
@@ -258,9 +258,17 @@ async def summarize(
 class Tools:
     @staticmethod
     def _is_private_url(url: str) -> bool:
-        host = urlparse(url).hostname
+        # Use urlsplit to handle unicode host before DNS lookup (IDNA)
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            return True
         if not host:
             return True
+        try:
+            host = host.encode("idna").decode("ascii")
+        except Exception:
+            pass
         try:
             infos = socket.getaddrinfo(host, None)
         except OSError:
@@ -458,6 +466,9 @@ class Tools:
             file_id = Cache.new_id()
             Cache.store(file_id, content)
             return f"Stored as memory://{file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (memory://{file_id})"
+
+        # Normalize IRI -> URI so http.client ASCII path succeeds
+        url = _iri_to_uri(url)
 
         proxy = Config.markdown_fetch_proxy()
         if proxy:
