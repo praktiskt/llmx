@@ -39,7 +39,7 @@ class Cache:
         if len(content) > Config.MAX_TOOL_RESULT_CHARS:
             file_id = Cache.new_id()
             Cache.store(file_id, content)
-            return f"Stored as memory://{file_id} ({len(content)} chars). Use read_file with sources=['memory://{file_id}'] to read or summarize."
+            return f"Stored as memory://{file_id} ({len(content)} chars). Use read with sources=['memory://{file_id}'] to read or summarize."
         return content
 
     @staticmethod

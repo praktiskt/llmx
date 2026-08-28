@@ -174,11 +174,11 @@ async def search(
     lines = []
     for q, fid in results:
         if fid is None:
-            lines.append(f"Query '{q}': search failed, do not read_file this query")
+            lines.append(f"Query '{q}': search failed, do not read this query")
         else:
             lines.append(f"Query '{q}' stored in memory://{fid}")
     lines.append("")
     lines.append(
-        "Use read_file, grep_file or summarize with that memory:// id to get the content."
+        "Use read, grep or summarize with that memory:// id to get the content."
     )
     return "\n".join(lines)

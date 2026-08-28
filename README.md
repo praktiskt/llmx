@@ -2,7 +2,7 @@
 
 LLM with tool use - dependency-free CLI (`dist/llm` zipapp, stdlib only) + FastAPI web UI (SSE streaming).
 
-Tools: `fetch`/`search`->`memory://<id>`, `read_file`/`grep_file`/`summarize` over `sources=[memory://..., "path/*.py"]`, `list_files`, MCP `server__tool`. Resilience: 5x retry, keep-alive pool, context truncation, harness filter.
+Tools: `fetch`/`search`->`memory://<id>`, `read`/`grep`/`summarize` over `sources=[memory://..., "path/*.py"]`, `list_files`, MCP `server__tool`. Resilience: 5x retry, keep-alive pool, context truncation, harness filter.
 
 ## Quickstart
 
@@ -16,7 +16,7 @@ make build && cp dist/llm ~/.local/bin/llm; make test
 
 ## Env
 
-`LLM_TOOLS` (all; `fetch,search,read_file,grep_file,summarize,list_files` or `server__tool`), `LLM_TEMPERATURE=0.1`, `LLM_STREAM=True`, `LLM_RESPONSE_FORMAT` (set disables stream), `LLM_SHOW_THINKING=True`, `LLM_MAX_CONTEXT_CHARS=200000`, `LLM_SYSTEM_PROMPT`, `NO_COLOR`/`LLM_DISABLE_COLOR_OUTPUT=False`, `LOG_LEVEL=WARNING` (CLI) / `INFO` (server).
+`LLM_TOOLS` (all; `fetch,search,read,grep,summarize,list_files` or `server__tool` - `read_file`/`grep_file` aliases kept for compat), `LLM_TEMPERATURE=0.1`, `LLM_STREAM=True`, `LLM_RESPONSE_FORMAT` (set disables stream), `LLM_SHOW_THINKING=True`, `LLM_MAX_CONTEXT_CHARS=200000`, `LLM_SYSTEM_PROMPT`, `NO_COLOR`/`LLM_DISABLE_COLOR_OUTPUT=False`, `LOG_LEVEL=WARNING` (CLI) / `INFO` (server).
 
 `LLM_MARKDOWN_FETCH_PROXY`, `LLM_MARKDOWN_SEARCH_PROXY`, `LLM_MARKDOWN_IMAGE_SEARCH_PROXY`, `LLM_FETCH_ALLOW_PRIVATE=False`, `LLM_SUMMARIZE_CONCURRENCY=4`.
 

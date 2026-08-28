@@ -256,6 +256,10 @@ async def summarize(
 
 
 class Tools:
+    # Aliases for backwards compat after rename read_file->read, grep_file->grep
+    _ALIASES = {"read_file": "read", "grep_file": "grep"}
+    _REVERSE_ALIASES = {"read": "read_file", "grep": "grep_file"}
+
     @staticmethod
     def _is_private_url(url: str) -> bool:
         # Use urlsplit to handle unicode host before DNS lookup (IDNA)
@@ -341,7 +345,7 @@ class Tools:
         {
             "type": "function",
             "function": {
-                "name": "read_file",
+                "name": "read",
                 "description": "Read content from one or more sources: cached documents (memory://<id> from fetch/search) and/or local files (paths relative to the current directory, if local access is enabled)",
                 "parameters": {
                     "type": "object",
@@ -402,7 +406,7 @@ class Tools:
         {
             "type": "function",
             "function": {
-                "name": "grep_file",
+                "name": "grep",
                 "description": "Search for a pattern in one or more sources: cached documents (memory://<id> from fetch/search) and/or local files (paths relative to the current directory, if local access is enabled)",
                 "parameters": {
                     "type": "object",
@@ -465,7 +469,7 @@ class Tools:
         def store_and_return(content: str) -> str:
             file_id = Cache.new_id()
             Cache.store(file_id, content)
-            return f"Stored as memory://{file_id} ({len(content)} chars). Tools: read_file, grep_file, summarize (memory://{file_id})"
+            return f"Stored as memory://{file_id} ({len(content)} chars). Tools: read, grep, summarize (memory://{file_id})"
 
         # Normalize IRI -> URI so http.client ASCII path succeeds
         url = _iri_to_uri(url)
@@ -528,22 +532,40 @@ class Tools:
         allowed = Config.allowed_tools()
         if allowed is None:
             return all_schemas
-        return [tool for tool in all_schemas if tool["function"]["name"] in allowed]
+        # Support aliases: LLM_TOOLS may contain old names (read_file/grep_file) or new (read/grep)
+        expanded = set(allowed)
+        for name in list(allowed):
+            if name in Tools._ALIASES:
+                expanded.add(Tools._ALIASES[name])
+            if name in Tools._REVERSE_ALIASES:
+                expanded.add(Tools._REVERSE_ALIASES[name])
+        return [tool for tool in all_schemas if tool["function"]["name"] in expanded]
 
     @staticmethod
     async def execute(tool_name: str, tool_args: dict) -> str:
+        # Normalize aliases for backwards compat
+        canonical = Tools._ALIASES.get(tool_name, tool_name)
         allowed = Config.allowed_tools()
-        if allowed is not None and tool_name not in allowed:
-            return f"Error: tool '{tool_name}' is not enabled"
+        if allowed is not None:
+            expanded = set(allowed)
+            for name in list(allowed):
+                if name in Tools._ALIASES:
+                    expanded.add(Tools._ALIASES[name])
+                if name in Tools._REVERSE_ALIASES:
+                    expanded.add(Tools._REVERSE_ALIASES[name])
+            if tool_name not in expanded and canonical not in expanded:
+                return f"Error: tool '{tool_name}' is not enabled"
         handlers = {
             "fetch": Tools._exec_fetch,
             "search": Tools._exec_search,
+            "read": Tools._exec_read_file,
             "read_file": Tools._exec_read_file,
             "summarize": Tools._exec_summarize,
+            "grep": Tools._exec_grep_file,
             "grep_file": Tools._exec_grep_file,
             "list_files": Tools._exec_list_files,
         }
-        handler = handlers.get(tool_name)
+        handler = handlers.get(tool_name) or handlers.get(canonical)
         if handler is None:
             # MCP tools are prefixed server__tool
             if (
@@ -709,7 +731,7 @@ class Tools:
             return (tool_id, result)
 
         num_sources = len(Tools._as_list(args["sources"])) if args.get("sources") else 0
-        if tool_name == "read_file":
+        if tool_name in ("read", "read_file"):
             current_limit = args.get("limit") or 50
             if current_limit > 10:
                 suggested_limit = max(

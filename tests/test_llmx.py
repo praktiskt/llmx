@@ -512,9 +512,22 @@ class ToolsAllowlistTest(unittest.TestCase):
 
     def test_allowlist_filters_schema(self):
 
+        os.environ["LLM_TOOLS"] = "fetch, read"
+        names = {t["function"]["name"] for t in Tools.schema()}
+        self.assertEqual(names, {"fetch", "read"})
+
+    def test_allowlist_alias_compat(self):
+
         os.environ["LLM_TOOLS"] = "fetch, read_file"
         names = {t["function"]["name"] for t in Tools.schema()}
-        self.assertEqual(names, {"fetch", "read_file"})
+        self.assertEqual(names, {"fetch", "read"})
+        os.environ["LLM_TOOLS"] = "fetch, read"
+        # old alias should still be executable
+        Cache.store("abc123", "hello alias")
+        result = asyncio.run(
+            Tools.execute("read_file", {"sources": ["memory://abc123"]})
+        )
+        self.assertIn("hello alias", result)
 
     def test_empty_value_disables_all(self):
 
@@ -766,7 +779,7 @@ class LocalFilesTest(unittest.TestCase):
         names = {t["function"]["name"] for t in Tools.SCHEMA}
         self.assertIn("list_files", names)
         by_name = {t["function"]["name"]: t for t in Tools.SCHEMA}
-        for tool in ("read_file", "grep_file", "summarize"):
+        for tool in ("read", "grep", "summarize"):
             params = by_name[tool]["function"]["parameters"]
             props = params["properties"]
             self.assertIn("sources", props, tool)

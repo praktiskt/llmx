@@ -18,8 +18,10 @@ class Color:
     TOOL_COLORS = {
         "fetch": "\033[2;36m",
         "search": "\033[2;32m",
+        "read": "\033[2;34m",
         "read_file": "\033[2;34m",
         "summarize": "\033[2;33m",
+        "grep": "\033[2;35m",
         "grep_file": "\033[2;35m",
         "list_files": "\033[2;37m",
     }
