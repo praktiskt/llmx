@@ -122,6 +122,10 @@ class Config:
         return prompt
 
     @staticmethod
+    def summarize_model() -> str:
+        return os.environ.get("LLM_MODEL_SMALL") or os.environ["LLM_MODEL"]
+
+    @staticmethod
     def generate_file_id() -> str:
         return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 

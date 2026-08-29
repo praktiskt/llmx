@@ -136,7 +136,7 @@ async def summarize(
 
         payload = {
             "messages": messages,
-            "model": os.environ["LLM_MODEL"],
+            "model": Config.summarize_model(),
             "temperature": 0.1,
             "stream": False,
             "max_tokens": tokens_for_summary,
