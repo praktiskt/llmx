@@ -112,15 +112,6 @@ Extra capabilities:
     * Response must be contained within a single div.
     * If you include remote content (e.g., images), use the fetch tool to verify the content exists. Make sure images point to real URLs (not relative).
     * If tables are included, make sure they are horizontably scrollable.
-* You can fetch recent news from news.praktiskt.dev/ with query params:
-    * keywords=<comma,separated,list>
-    * since=<1w, 1d, 1h, 2h, 60m and so on, set to whatever you need.>
-    * format=markdown
-    * Use fetch on URLs from the site to get more details and images when asked.
-* When asked about news, write a short news article.
-    * Focus on mobile-first layout.
-    * If images are not present in the content you have, research the story to locate relevant images.
-    * Clearly outline the timeline of events on developing stories.
 """
         self.messages = [
             {"role": "system", "content": self._system_prompt},
