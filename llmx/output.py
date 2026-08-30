@@ -26,14 +26,17 @@ class Color:
         "list_files": "\033[2;37m",
     }
     DEFAULT = "\033[2m"
+    MCP = "\033[2;38;5;208m"
     THINKING = "\033[2;3m"
     ERROR = "\033[2;31m"
 
     @staticmethod
     def tool(name: str, text: str) -> str:
         if Config.color_output_enabled():
-            color = Color.TOOL_COLORS.get(name, Color.DEFAULT)
-            return f"{color}{text}{Color.RESET}"
+            color = Color.TOOL_COLORS.get(name)
+            if color is None and "__" in name:
+                color = Color.MCP
+            return f"{color or Color.DEFAULT}{text}{Color.RESET}"
         return text
 
     @staticmethod

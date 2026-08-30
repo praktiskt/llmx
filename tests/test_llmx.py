@@ -15,6 +15,7 @@ from llmx.localfs import grep_entries as localfs_grep
 from llmx.localfs import list_entries as localfs_list
 from llmx.localfs import read_entries as localfs_read
 from llmx.localfs import resolve as localfs_resolve
+from llmx.output import Color
 from llmx.tools import Tools, _repair_json, parse_tool_args
 from llmx.transport import Response, request_with_retries
 
@@ -66,6 +67,42 @@ class ValidateFileIdTest(unittest.TestCase):
     def test_empty(self):
         err = Config.validate_file_id("")
         self.assertIsNotNone(err)
+
+
+class ColorToolTest(unittest.TestCase):
+    def setUp(self):
+        self._old = {
+            k: os.environ.get(k) for k in ("NO_COLOR", "LLM_DISABLE_COLOR_OUTPUT")
+        }
+        for k in ("NO_COLOR", "LLM_DISABLE_COLOR_OUTPUT"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_builtin_uses_mapped_color(self):
+        out = Color.tool("grep", "[tool] grep(q='x')")
+        self.assertTrue(out.startswith(Color.TOOL_COLORS["grep"]))
+        self.assertTrue(out.endswith(Color.RESET))
+
+    def test_mcp_name_gets_mcp_color(self):
+        out = Color.tool("fs__read_file", "[tool] fs__read_file(path='a')")
+        self.assertTrue(out.startswith(Color.MCP))
+        self.assertTrue(out.endswith(Color.RESET))
+        self.assertNotEqual(Color.MCP, Color.DEFAULT)
+
+    def test_unknown_non_mcp_falls_back_dim(self):
+        out = Color.tool("mystery", "x")
+        self.assertTrue(out.startswith(Color.DEFAULT))
+
+    def test_disabled_color_plain(self):
+        os.environ["LLM_DISABLE_COLOR_OUTPUT"] = "true"
+        out = Color.tool("fs__read_file", "[tool] fs__read_file(path='a')")
+        self.assertEqual(out, "[tool] fs__read_file(path='a')")
 
 
 class CacheTest(unittest.TestCase):
