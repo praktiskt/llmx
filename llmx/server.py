@@ -24,9 +24,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .client import LLMClient, StreamFilter, truncate_history
+from .client import LLMClient, StreamFilter, repair_history_tool_calls, truncate_history
 from .config import Config
-from .tools import Tools
+from .tools import Tools, sanitize_tool_call_args
 from .transport import request_with_retries
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -423,6 +423,60 @@ async def execute_with_retry(tool_call: dict, max_retries: int = 5) -> tuple[str
     return tool_id, "Error: Max retries exceeded"
 
 
+def _build_assistant_message(
+    streamed_tool_calls: dict[int, dict],
+    content: str,
+    reasoning: str,
+) -> tuple[dict, list[dict]]:
+    """Assemble the assistant message from streamed tool calls.
+
+    Validates every tool_call's arguments with sanitize_tool_call_args:
+    repairable arguments are re-serialized canonically; unrepairable ones
+    are replaced with a {"__unparsed__": raw} placeholder so nothing
+    invalid is persisted (they are returned via the second tuple element
+    so the caller can also emit a synthetic tool error, which prompts the
+    model to re-issue a proper call).
+
+    Returns (assistant_message, placeholdered_tool_calls).
+    """
+    tool_calls = []
+    placeholdered = []
+    for index in sorted(streamed_tool_calls):
+        tool_call = streamed_tool_calls[index]
+        func = tool_call.setdefault("function", {})
+        sanitized = sanitize_tool_call_args(func.get("arguments", ""))
+        call_name = func.get("name") or "unknown"
+        if sanitized is None:
+            raw = func.get("arguments", "")
+            logger.error(
+                "Unrepairable tool_call arguments stored as placeholder: "
+                "name=%s args=%.200r",
+                call_name,
+                raw,
+            )
+            func["arguments"] = json.dumps({"__unparsed__": raw})
+            placeholdered.append(tool_call)
+            tool_calls.append(tool_call)
+            continue
+        if sanitized != func.get("arguments", ""):
+            logger.warning(
+                "Repaired malformed tool_call arguments: name=%s -> %.200s",
+                call_name,
+                sanitized,
+            )
+            func["arguments"] = sanitized
+        tool_calls.append(tool_call)
+
+    assistant: dict = {
+        "role": "assistant",
+        "content": content or None,
+        "tool_calls": tool_calls,
+    }
+    if reasoning:
+        assistant["reasoning"] = reasoning
+    return assistant, placeholdered
+
+
 async def stream_response(session: Session, request: Request) -> AsyncGenerator[str]:
     # Ensure MCP manager is started (lazy, in case startup event was missed).
     try:
@@ -449,6 +503,7 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
 
     for _ in range(max_iterations):
         session.messages = truncate_history(session.messages)
+        repair_history_tool_calls(session.messages)
         payload = LLMClient.body(session.messages)
         payload["stream"] = True
 
@@ -597,17 +652,33 @@ async def stream_response(session: Session, request: Request) -> AsyncGenerator[
                 )
             return
 
-        assistant: dict = {
-            "role": "assistant",
-            "content": content or None,
-            "tool_calls": [streamed_tool_calls[i] for i in sorted(streamed_tool_calls)],
-        }
-        if reasoning:
-            assistant["reasoning"] = reasoning
+        assistant, placeholdered_calls = _build_assistant_message(
+            streamed_tool_calls, content, reasoning
+        )
         session.messages.append(assistant)
 
+        for placeholdered in placeholdered_calls:
+            tool_id = placeholdered.get("id", "")
+            session.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": "Error: tool call arguments were malformed and could not be repaired; re-issue the call with valid JSON arguments.",
+                }
+            )
+            yield _sse(
+                {
+                    "type": "tool_result",
+                    "id": tool_id,
+                    "content": "Tool call arguments unparseable; call not executed",
+                }
+            )
+
+        placeholdered_ids = {c.get("id", "") for c in placeholdered_calls}
         parsed_calls = []
         for tool_call in assistant["tool_calls"]:
+            if tool_call.get("id", "") in placeholdered_ids:
+                continue
             func = tool_call.get("function", {})
             tool_name = func.get("name", "unknown")
             try:

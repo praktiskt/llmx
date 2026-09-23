@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import sys
 import threading
@@ -7,8 +8,10 @@ from collections.abc import Awaitable
 
 from .config import Config
 from .output import Color, Log
-from .tools import Tools, parse_tool_args
+from .tools import Tools, parse_tool_args, sanitize_tool_call_args
 from .transport import AsyncHttp, LLMAPIError, Response, request_with_retries
+
+logger = logging.getLogger(__name__)
 
 _STREAM_EOF = object()
 
@@ -115,6 +118,46 @@ def truncate_history(messages: list[dict]) -> list[dict]:
     ]
 
 
+def repair_history_tool_calls(messages: list) -> None:
+    """Fix malformed tool_call arguments in an in-flight history, in place.
+
+    Repairable arguments are replaced with canonically serialized JSON so
+    strict providers don't reject the whole replay. Unrepairable arguments
+    are left untouched — the provider's 400 then surfaces against the
+    original payload instead of a silently rewritten one. Internal markers
+    are stripped either way.
+    """
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        msg.pop("_malformed_tool_calls_dropped", None)
+        tool_calls = msg.get("tool_calls")
+        if not tool_calls:
+            continue
+        for tc in tool_calls:
+            func = tc.get("function") or {}
+            args = func.get("arguments")
+            if args is None:
+                continue
+            sanitized = sanitize_tool_call_args(args)
+            if sanitized is None and args:
+                logger.error(
+                    "Unrepairable tool_call arguments left in history: name=%s args=%.200r",
+                    func.get("name") or "unknown",
+                    args,
+                )
+                continue
+            if sanitized is None:
+                continue
+            if sanitized != args:
+                logger.warning(
+                    "Repaired malformed tool_call arguments in history: name=%s -> %.200s",
+                    func.get("name") or "unknown",
+                    sanitized,
+                )
+                func["arguments"] = sanitized
+
+
 class LLMClient:
     @staticmethod
     def body(messages: list) -> dict:
@@ -179,6 +222,7 @@ class LLMClient:
 
         while True:
             messages = truncate_history(messages)
+            repair_history_tool_calls(messages)
             msg = LLMClient.body(messages=messages)
 
             def send(msg=msg) -> Awaitable[Response]:

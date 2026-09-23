@@ -3,6 +3,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 from urllib.parse import urlsplit
 
@@ -90,6 +91,252 @@ def parse_tool_args(args_str: str) -> dict:
         except json.JSONDecodeError:
             args = {}
     return _unwrap_args(args)
+
+
+_ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+_NUMBER_CHARS = set("0123456789.+-eE")
+_SKIP_WS = " \t\r\n"
+
+
+class _TolerantParser:
+    """Recursive-descent parser for corrupted JSON from model streams.
+
+    Extends strict JSON with:
+    - unquoted (bare) string values and keys;
+    - commas tolerated inside bare values (terminated by a following
+      `"key":` or the enclosing delimiter instead of the first comma).
+    """
+
+    def __init__(self, text: str):
+        self.text = text
+        self.pos = 0
+        self.n = len(text)
+
+    def error(self, msg: str):
+        raise ValueError(f"{msg} at offset {self.pos}")
+
+    def skip_ws(self) -> None:
+        while self.pos < self.n and self.text[self.pos] in _SKIP_WS:
+            self.pos += 1
+
+    def peek(self) -> str:
+        return self.text[self.pos] if self.pos < self.n else ""
+
+    def parse(self):
+        self.skip_ws()
+        value = self.parse_value()
+        self.skip_ws()
+        if self.pos < self.n:
+            self.error("trailing data")
+        return value
+
+    def parse_value(self):
+        self.skip_ws()
+        ch = self.peek()
+        if ch == "{":
+            return self.parse_object()
+        if ch == "[":
+            return self.parse_array()
+        if ch == '"':
+            return self.parse_string()
+        if ch in "-0123456789":
+            return self.parse_number()
+        if ch.isalpha() or ch == "_":
+            return self.parse_bare()
+        if ch == "":
+            self.error("unexpected end of input")
+        self.error(f"unexpected character {ch!r}")
+
+    def parse_bare(self):
+        """Bare (unquoted) value: keyword, scalar, or free-form text.
+
+        Consumes text until the enclosing `}`/`]` or until a `,` that is
+        immediately followed by a `"key":`/`key:` pair — so commas with
+        prose (e.g. `"directives": Extract x, y and z}`) stay in the value.
+        """
+        start = self.pos
+        i = start
+        while i < self.n:
+            c = self.text[i]
+            if c in "}]":
+                break
+            if c == "," and _key_ahead(self.text, i + 1):
+                break
+            i += 1
+        self.pos = i
+        token = self.text[start:i].strip()
+        if not token:
+            self.error("empty bare value")
+        return {"true": True, "false": False, "null": None}.get(token, token)
+
+    def parse_object(self) -> dict:
+        self.pos += 1  # consuming {
+        obj = {}
+        self.skip_ws()
+        if self.peek() == "}":
+            self.pos += 1
+            return obj
+        while True:
+            self.skip_ws()
+            key = self.parse_key()
+            self.skip_ws()
+            if self.peek() != ":":
+                self.error("expected ':' in object")
+            self.pos += 1
+            obj[key] = self.parse_value()
+            self.skip_ws()
+            ch = self.peek()
+            if ch == ",":
+                self.pos += 1
+                self.skip_ws()
+                if self.peek() == "}":  # trailing comma
+                    self.pos += 1
+                    return obj
+                continue
+            if ch == "}":
+                self.pos += 1
+                return obj
+            self.error("expected ',' or '}' in object")
+
+    def parse_key(self) -> str:
+        self.skip_ws()
+        ch = self.peek()
+        if ch == '"':
+            return self.parse_string()
+        if ch.isalpha() or ch == "_":
+            start = self.pos
+            self.pos += 1
+            while self.pos < self.n and self.text[self.pos] in _ID_CHARS:
+                self.pos += 1
+            return self.text[start : self.pos]
+        self.error("expected object key")
+        self.error("expected object key")
+
+    def parse_array(self) -> list:
+        self.pos += 1  # consuming [
+        arr = []
+        self.skip_ws()
+        if self.peek() == "]":
+            self.pos += 1
+            return arr
+        while True:
+            arr.append(self.parse_value())
+            self.skip_ws()
+            ch = self.peek()
+            if ch == ",":
+                self.pos += 1
+                self.skip_ws()
+                if self.peek() == "]":  # trailing comma
+                    self.pos += 1
+                    return arr
+                continue
+            if ch == "]":
+                self.pos += 1
+                return arr
+            self.error("expected ',' or ']' in array")
+
+    def parse_string(self) -> str:
+        self.pos += 1  # consuming opening quote
+        out = []
+        while True:
+            if self.pos >= self.n:
+                self.error("unterminated string")
+            ch = self.text[self.pos]
+            if ch == "\\":
+                if self.pos + 1 >= self.n:
+                    self.error("unterminated escape")
+                out.append(ch)
+                out.append(self.text[self.pos + 1])
+                self.pos += 2
+                continue
+            if ch == '"':
+                self.pos += 1
+                return "".join(out)
+            out.append(ch)
+            self.pos += 1
+
+    def parse_number(self):
+        start = self.pos
+        while self.pos < self.n and self.text[self.pos] in _NUMBER_CHARS:
+            self.pos += 1
+        token = self.text[start : self.pos]
+        try:
+            if any(c in token for c in ".eE"):
+                return float(token)
+            return int(token)
+        except ValueError as exc:
+            raise ValueError(f"bad number {token!r}") from exc
+
+
+def _key_ahead(text: str, pos: int) -> bool:
+    """True if `"key":` or `key:` starts between ``pos`` and the next `,`,
+    `}`, `]`, or end of text (used to terminate a bare value at the comma
+    before a following entry instead of treating the comma as prose)."""
+    n = len(text)
+    while pos < n and text[pos] != "," and text[pos] not in "}]":
+        if text[pos] == '"':
+            if re.match(r'"[A-Za-z_$][^"\\]*"\s*:', text[pos:]):
+                return True
+            pos += 1
+            continue
+        if text[pos] in _SKIP_WS:
+            pos += 1
+            continue
+        # bare key: identifier chars, optional ws, then ':'
+        if text[pos].isalpha() or text[pos] == "_":
+            j = pos
+            while j < n and (text[j].isalnum() or text[j] in "_$-"):
+                j += 1
+            k = j
+            while k < n and text[k] in _SKIP_WS:
+                k += 1
+            if k < n and text[k] == ":":
+                return True
+            # not a key; keep scanning
+            pos = j
+            continue
+        pos += 1
+    return False
+
+
+def _tolerant_loads(text: str):
+    """Parse possibly-corrupted JSON; raises ValueError if unrepairable."""
+    return _TolerantParser(text).parse()
+
+
+def sanitize_tool_call_args(arguments: str | None) -> str | None:
+    """Return valid JSON for streamed tool-call arguments, or None.
+
+    Escalating repair ladder for arguments assembled from a model stream:
+    1. already valid JSON -> unchanged;
+    2. in-string quote corruption -> _repair_json;
+    3. missing value quotes -> tolerant parser, re-serialized canonically;
+    4. unrepairable -> None (caller decides whether to drop).
+    """
+    if not arguments or not arguments.strip():
+        return None
+    try:
+        json.loads(arguments)
+        return arguments
+    except json.JSONDecodeError:
+        pass
+    try:
+        repaired = _repair_json(arguments)
+        json.loads(repaired)
+        return repaired
+        # _repair_json escapes in-string quotes; a bare missing-value case
+        # survives it, so fall through to the tolerant parser.
+    except json.JSONDecodeError:
+        pass
+    try:
+        parsed = _tolerant_loads(arguments)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        # Tool-call arguments must be an object; a bare top-level string or
+        # array is not a repair target.
+        return None
+    return json.dumps(parsed, ensure_ascii=False)
 
 
 async def summarize(

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from llmx.cache import Cache
-from llmx.client import StreamFilter, truncate_history
+from llmx.client import StreamFilter, repair_history_tool_calls, truncate_history
 from llmx.config import Config
 from llmx.localfs import contents as localfs_contents
 from llmx.localfs import grep_entries as localfs_grep
@@ -16,8 +16,20 @@ from llmx.localfs import list_entries as localfs_list
 from llmx.localfs import read_entries as localfs_read
 from llmx.localfs import resolve as localfs_resolve
 from llmx.output import Color
-from llmx.tools import Tools, _repair_json, parse_tool_args
+from llmx.server import _build_assistant_message
+from llmx.tools import (
+    Tools,
+    _repair_json,
+    parse_tool_args,
+    sanitize_tool_call_args,
+)
 from llmx.transport import Response, request_with_retries
+
+_REPRO_ARGS = (
+    '{"sources": ["memory://n1jftw", "memory://lzfi1w"], "directives": '
+    "Extract main points about Iran, oil prices, Hormuz strait, market "
+    "reactions, and diplomatic developments}"
+)
 
 
 def run(coro):
@@ -54,6 +66,172 @@ class ParseToolArgsTest(unittest.TestCase):
     def test_string_encoded_list_unwrapped(self):
         result = parse_tool_args('{"file_ids": "[\\"abc123\\"]"}')
         self.assertEqual(result["file_ids"], ["abc123"])
+
+
+class SanitizeToolCallArgsTest(unittest.TestCase):
+    def test_valid_json_unchanged(self):
+        self.assertEqual(
+            sanitize_tool_call_args('{"urls": ["https://x"]}'),
+            '{"urls": ["https://x"]}',
+        )
+
+    def test_repro_bare_directive_value(self):
+        result = sanitize_tool_call_args(_REPRO_ARGS)
+        self.assertIsNotNone(result)
+        parsed = json.loads(result)
+        self.assertEqual(parsed["sources"], ["memory://n1jftw", "memory://lzfi1w"])
+        self.assertIn("Hormuz strait", parsed["directives"])
+        self.assertTrue(parsed["directives"].endswith("diplomatic developments"))
+
+    def test_multiple_bare_keys(self):
+        parsed = json.loads(
+            sanitize_tool_call_args('{"a": oops one, "b": also oops, "c": 3}')
+        )
+        self.assertEqual(parsed, {"a": "oops one", "b": "also oops", "c": 3})
+
+    def test_numeric_and_scalar_values_preserved(self):
+        parsed = json.loads(
+            sanitize_tool_call_args(
+                '{"a": oops, "b": 2, "c": 1.5, "d": true, "e": null}'
+            )
+        )
+        self.assertEqual(parsed, {"a": "oops", "b": 2, "c": 1.5, "d": True, "e": None})
+
+    def test_bare_key(self):
+        parsed = json.loads(sanitize_tool_call_args('{a: "b"}'))
+        self.assertEqual(parsed, {"a": "b"})
+
+    def test_bare_value_with_inner_quotes(self):
+        parsed = json.loads(sanitize_tool_call_args('{"a": say "hi" now, "b": 1}'))
+        self.assertEqual(parsed, {"a": 'say "hi" now', "b": 1})
+
+    def test_in_string_quote_corruption(self):
+        result = sanitize_tool_call_args('{"a": "say "hi" now", "b": 1}')
+        self.assertEqual(json.loads(result), {"a": 'say "hi" now', "b": 1})
+
+    def test_garbage_returns_none(self):
+        self.assertIsNone(sanitize_tool_call_args("not json at all {"))
+
+    def test_unterminated_returns_none(self):
+        self.assertIsNone(sanitize_tool_call_args('{"a": "'))
+
+    def test_non_object_top_level_returns_none(self):
+        self.assertIsNone(sanitize_tool_call_args("not json"))
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(sanitize_tool_call_args(""))
+        self.assertIsNone(sanitize_tool_call_args(None))
+
+
+class RepairHistoryToolCallsTest(unittest.TestCase):
+    def test_repairs_malformed_arguments_in_place(self):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "id": "call_1",
+                        "function": {"name": "summarize", "arguments": _REPRO_ARGS},
+                    }
+                ],
+            }
+        ]
+        repair_history_tool_calls(messages)
+        parsed = json.loads(messages[0]["tool_calls"][0]["function"]["arguments"])
+        self.assertIn("Hormuz strait", parsed["directives"])
+
+    def test_unrepairable_arguments_left_unchanged(self):
+        bad = "not json at all {"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "id": "call_1",
+                        "function": {"name": "summarize", "arguments": bad},
+                    }
+                ],
+            }
+        ]
+        repair_history_tool_calls(messages)
+        self.assertEqual(messages[0]["tool_calls"][0]["function"]["arguments"], bad)
+
+    def test_internal_marker_stripped(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "hi",
+                "_malformed_tool_calls_dropped": True,
+            }
+        ]
+        repair_history_tool_calls(messages)
+        self.assertNotIn("_malformed_tool_calls_dropped", messages[0])
+
+
+class BuildAssistantMessageTest(unittest.TestCase):
+    def test_valid_stream_passthrough(self):
+        streamed = {
+            0: {
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "t", "arguments": '{"a": 1}'},
+            }
+        }
+        assistant, placeholdered = _build_assistant_message(streamed, "c", "r")
+        self.assertEqual(
+            assistant["tool_calls"][0]["function"]["arguments"], '{"a": 1}'
+        )
+        self.assertEqual(placeholdered, [])
+        self.assertEqual(assistant["reasoning"], "r")
+
+    def test_malformed_repaired_in_persisted_message(self):
+        streamed = {
+            0: {
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "summarize", "arguments": _REPRO_ARGS},
+            }
+        }
+        assistant, placeholdered = _build_assistant_message(streamed, "", "")
+        parsed = json.loads(assistant["tool_calls"][0]["function"]["arguments"])
+        self.assertIn("Hormuz strait", parsed["directives"])
+        self.assertEqual(placeholdered, [])
+
+    def test_unrepairable_placeholdered(self):
+        streamed = {
+            0: {
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "t", "arguments": '{"a": 1}'},
+            },
+            1: {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "t2", "arguments": "not json at all {"},
+            },
+        }
+        assistant, placeholdered = _build_assistant_message(streamed, "x", "")
+        # Pairing stays valid: call remains, arguments replaced by a
+        # valid-JSON placeholder instead of raw bytes.
+        self.assertEqual(len(assistant["tool_calls"]), 2)
+        args = json.loads(assistant["tool_calls"][1]["function"]["arguments"])
+        self.assertEqual(list(args), ["__unparsed__"])
+        self.assertEqual([c["id"] for c in placeholdered], ["call_1"])
+
+    def test_all_unrepairable_still_paired(self):
+        streamed = {
+            0: {
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "t", "arguments": "not json at all {"},
+            },
+        }
+        assistant, placeholdered = _build_assistant_message(streamed, "", "r")
+        self.assertEqual(len(assistant["tool_calls"]), 1)
+        self.assertEqual([c["id"] for c in placeholdered], ["call_0"])
+        self.assertEqual(assistant["reasoning"], "r")
 
 
 class ValidateFileIdTest(unittest.TestCase):
