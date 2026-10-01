@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import select
 import sys
 import threading
 from collections.abc import Awaitable
@@ -16,6 +17,75 @@ logger = logging.getLogger(__name__)
 _STREAM_EOF = object()
 
 _TRUNCATION_MARKER = "[earlier messages truncated to fit the context window]"
+
+
+class EscWatcher:
+    """Watches stdin for a bare ESC press while the model is streaming.
+
+    Runs the tty in cbreak mode on a daemon thread: canonical mode and echo
+    are off (so ESC reaches us as a byte) but ISIG stays on, keeping Ctrl+C
+    working. Arrow keys etc. send ESC-prefixed sequences, so an ESC byte is
+    only treated as a stop when nothing follows it within ~3 ms.
+
+    Stdlib only (termios/select); no-op on non-tty stdin or platforms
+    without termios.
+    """
+
+    def __init__(self) -> None:
+        self.interrupted = False
+        self._stop = threading.Event()
+
+    def __enter__(self) -> "EscWatcher":
+        if not (Config.interactive_enabled() and sys.stdin.isatty()):
+            return self
+        try:
+            import termios
+        except ImportError:
+            return self
+        try:
+            self._orig = termios.tcgetattr(sys.stdin.fileno())
+        except Exception:
+            return self
+        self._lflag_idx = 3
+        self._termios = termios
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        termios = self._termios
+        fd = sys.stdin.fileno()
+        try:
+            attrs = termios.tcgetattr(fd)
+            # keep ISIG (bit 6 of lflag) so Ctrl+C still raises
+            attrs[self._lflag_idx] &= ~(termios.ICANON | termios.ECHO | termios.ECHONL)
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        except Exception:
+            return
+        try:
+            while not self._stop.is_set() and not self.interrupted:
+                ready, _, _ = select.select([fd], [], [], 0.05)
+                if not ready:
+                    continue
+                data = os.read(fd, 1)
+                if data == b"\x1b":
+                    # bare ESC if nothing follows within ~3 ms
+                    more, _, _ = select.select([fd], [], [], 0.003)
+                    if not more:
+                        self.interrupted = True
+                        self._stop.set()
+                # else: swallow non-ESC bytes (arrow sequences etc.)
+        except Exception:
+            pass
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSANOW, self._orig)
+            except Exception:
+                pass
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+
 
 _HARNESS_TAGS = (("<system-reminder>", "</system-reminder>"),)
 
@@ -240,45 +310,55 @@ class LLMClient:
             def log_failure(text: str) -> None:
                 Log.stderr(f"{Color.ERROR}[error]: {text}{Color.RESET}")
 
-            response = await request_with_retries(
-                send,
-                attempts=5,
-                on_exception=lambda a, e: log_failure(f"attempt {a}/5 failed: {e}"),
-                on_retry=lambda a, r: log_failure(
-                    f"API {r.status_code} (attempt {a}/5): "
-                    f"{r.content.decode(errors='replace')[:200]}, retrying"
-                ),
-            )
-
-            if response is None or response.status_code != 200:
-                status = response.status_code if response else "no response"
-                body = (
-                    response.content.decode(errors="replace")[:500]
-                    if response
-                    else "all attempts raised"
-                )
-                raise LLMAPIError(
-                    f"API request failed after 5 attempts (last status: {status}): {body}"
+            watcher = EscWatcher()
+            with watcher:
+                response = await request_with_retries(
+                    send,
+                    attempts=5,
+                    on_exception=lambda a, e: log_failure(f"attempt {a}/5 failed: {e}"),
+                    on_retry=lambda a, r: log_failure(
+                        f"API {r.status_code} (attempt {a}/5): "
+                        f"{r.content.decode(errors='replace')[:200]}, retrying"
+                    ),
                 )
 
-            if Config.is_stream():
-                message, printed = await LLMClient._read_stream(response)
-            else:
-                data = response.json()
-                message = data.get("choices", [{}])[0].get("message", {})
-                printed = False
-
-                if Config.thinking_enabled():
-                    reasoning = (
-                        message.get("reasoning_content")
-                        or message.get("reasoning")
-                        or ""
+                if response is None or response.status_code != 200:
+                    status = response.status_code if response else "no response"
+                    body = (
+                        response.content.decode(errors="replace")[:500]
+                        if response
+                        else "all attempts raised"
                     )
-                    if reasoning:
-                        Log.stderr(
-                            f"{Color.dim('[thinking]')} {Color.thinking(reasoning)}"
-                        )
+                    raise LLMAPIError(
+                        f"API request failed after 5 attempts (last status: {status}): {body}"
+                    )
 
+                if Config.is_stream():
+                    message, printed = await LLMClient._read_stream(response, watcher)
+                else:
+                    data = response.json()
+                    message = data.get("choices", [{}])[0].get("message", {})
+                    printed = False
+
+                    if Config.thinking_enabled():
+                        reasoning = (
+                            message.get("reasoning_content")
+                            or message.get("reasoning")
+                            or ""
+                        )
+                        if reasoning:
+                            Log.stderr(
+                                f"{Color.dim('[thinking]')} {Color.thinking(reasoning)}"
+                            )
+
+            if watcher.interrupted:
+                Log.stderr(Color.dim("\n[stopped]"), flush=True)
+                # don't leave dangling tool_calls without results in history
+                tool_calls = message.get("tool_calls") or []
+                if tool_calls:
+                    message.pop("tool_calls", None)
+                    if not message.get("content"):
+                        message["content"] = "[stopped by user before completion]"
             tool_calls = message.get("tool_calls") or []
             if not tool_calls or not Tools.schema():
                 content = message.get("content", "")
@@ -314,6 +394,8 @@ class LLMClient:
                 )
 
             results = {}
+            if watcher.interrupted:
+                return
             exec_tasks = [Tools.execute_wrapper(tc) for tc in tool_calls]
             exec_results = await asyncio.gather(*exec_tasks)
             for tool_id, result in exec_results:
@@ -332,7 +414,9 @@ class LLMClient:
                 )
 
     @staticmethod
-    async def _read_stream(response) -> tuple[dict, bool]:
+    async def _read_stream(
+        response, watcher: "EscWatcher | None" = None
+    ) -> tuple[dict, bool]:
         content_parts = []
         reasoning_parts = []
         tool_calls: dict[int, dict] = {}
@@ -397,6 +481,8 @@ class LLMClient:
             threading.Thread(target=pump, daemon=True).start()
 
             while True:
+                if watcher is not None and watcher.interrupted:
+                    break
                 item = await queue.get()
                 if item is _STREAM_EOF:
                     break
