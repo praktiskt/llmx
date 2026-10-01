@@ -24,6 +24,6 @@ make build && cp dist/llm ~/.local/bin/llm; make test
 
 `LLM_LOCAL_FILES=False` (+ `LLM_LOCAL_MAX_FILES=100`, `LLM_LOCAL_MAX_FILE_BYTES=2000000`) - enables `sources` local paths/globs (relative, no `..`/absolute/symlink escape).
 
-`LLM_INTERACTIVE=False` - tty REPL (`> `, Ctrl-D/`quit`/`exit`).
+`LLM_INTERACTIVE` (auto) - tty REPL (`> `, Ctrl-D/`quit`/`exit`). Unset: stdin is a tty => on; `false` disables.
 
 `LLM_MCP_SERVERS` (unset) - `{"fs":{"command":"npx","args":[...]},"remote":{"url":"http://host/mcp","headers":{}}}` (stdio: `command`+`args`/`env`/`cwd`; http: `url`+`headers`) -> `fs__tool`, `LLM_TOOLS`-filterable, large->`memory://` (`[a-zA-Z0-9_-]{1,32}`). `LLM_MCP_TIMEOUT=30`.

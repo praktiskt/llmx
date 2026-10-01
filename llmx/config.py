@@ -2,6 +2,7 @@ import os
 import random
 import re
 import string
+import sys
 from datetime import date
 
 
@@ -68,7 +69,11 @@ class Config:
 
     @staticmethod
     def interactive_enabled() -> bool:
-        return os.environ.get("LLM_INTERACTIVE", "False").lower() == "true"
+        """Auto: REPL when stdin is a tty and no args; explicit false opts out."""
+        raw = os.environ.get("LLM_INTERACTIVE")
+        if raw is None:
+            return sys.stdin.isatty()
+        return raw.lower() == "true"
 
     @staticmethod
     def mcp_servers() -> dict | None:

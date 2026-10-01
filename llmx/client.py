@@ -36,7 +36,7 @@ class EscWatcher:
         self._stop = threading.Event()
 
     def __enter__(self) -> "EscWatcher":
-        if not (Config.interactive_enabled() and sys.stdin.isatty()):
+        if not Config.interactive_enabled():
             return self
         try:
             import termios
@@ -268,7 +268,7 @@ class LLMClient:
     @staticmethod
     async def stream(prompt: list[str]) -> None:
         prompt_text = " ".join(prompt).strip()
-        if not prompt_text and Config.interactive_enabled() and sys.stdin.isatty():
+        if not prompt_text and Config.interactive_enabled():
             first = await LLMClient._next_user_message()
             if first is None:
                 return
@@ -364,7 +364,7 @@ class LLMClient:
                 content = message.get("content", "")
                 if content and not printed:
                     Log.stdout(content)
-                if not Config.interactive_enabled() or not sys.stdin.isatty():
+                if not Config.interactive_enabled():
                     return
                 message.pop("reasoning_content", None)
                 message.pop("reasoning", None)

@@ -1058,15 +1058,24 @@ class InteractiveTest(unittest.TestCase):
         def readline(self):
             return self._buf.readline()
 
-    def test_flag_default_off(self):
+    def test_flag_default_auto(self):
+        import unittest.mock
+
         os.environ.pop("LLM_INTERACTIVE", None)
-        self.assertFalse(Config.interactive_enabled())
+        with unittest.mock.patch("sys.stdin") as fake:
+            fake.isatty.return_value = True
+            self.assertTrue(Config.interactive_enabled())
+            fake.isatty.return_value = False
+            self.assertFalse(Config.interactive_enabled())
 
     def test_flag_env_toggle(self):
         os.environ["LLM_INTERACTIVE"] = "true"
         self.assertTrue(Config.interactive_enabled())
         os.environ["LLM_INTERACTIVE"] = "false"
         self.assertFalse(Config.interactive_enabled())
+        os.environ["LLM_INTERACTIVE"] = "anything-else"
+        self.assertFalse(Config.interactive_enabled())
+        os.environ.pop("LLM_INTERACTIVE", None)
 
     def test_next_user_message_reads_and_skips_blanks(self):
         import unittest.mock
