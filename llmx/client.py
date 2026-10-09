@@ -59,6 +59,10 @@ class EscWatcher:
             attrs = termios.tcgetattr(fd)
             # keep ISIG (bit 6 of lflag) so Ctrl+C still raises
             attrs[self._lflag_idx] &= ~(termios.ICANON | termios.ECHO | termios.ECHONL)
+            # non-blocking read: select() gates readiness, and a stolen byte
+            # must not wedge the loop past _stop
+            attrs[6][termios.VMIN] = 0
+            attrs[6][termios.VTIME] = 0
             termios.tcsetattr(fd, termios.TCSANOW, attrs)
         except Exception:
             return
@@ -67,6 +71,8 @@ class EscWatcher:
                 ready, _, _ = select.select([fd], [], [], 0.05)
                 if not ready:
                     continue
+                if self._stop.is_set():
+                    break
                 data = os.read(fd, 1)
                 if data == b"\x1b":
                     # bare ESC if nothing follows within ~3 ms
@@ -85,6 +91,9 @@ class EscWatcher:
 
     def __exit__(self, *exc) -> None:
         self._stop.set()
+        thread = getattr(self, "_thread", None)
+        if thread is not None:
+            thread.join(timeout=1.0)
 
 
 _HARNESS_TAGS = (("<system-reminder>", "</system-reminder>"),)
